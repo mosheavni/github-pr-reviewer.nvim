@@ -10,15 +10,88 @@ M.config = {
   open_files_on_review = false, -- open modified files in quickfix after merge
   show_comments = true, -- show PR comments in buffers during review
   show_icons = true, -- show icons in UI elements
+  show_inline_diff = true, -- show inline diff in buffers (old lines as virtual text)
+  mark_as_viewed_key = "<CR>", -- key to mark file as viewed and go to next file
+  next_hunk_key = "<C-j>", -- key to jump to next hunk
+  prev_hunk_key = "<C-k>", -- key to jump to previous hunk
+  next_file_key = "<C-l>", -- key to go to next file in quickfix
+  prev_file_key = "<C-h>", -- key to go to previous file in quickfix
 }
 
 local ns_id = vim.api.nvim_create_namespace("pr_review_comments")
 local changes_ns_id = vim.api.nvim_create_namespace("pr_review_changes")
+local diff_ns_id = vim.api.nvim_create_namespace("pr_review_diff")
 
 M._buffer_comments = {}
 M._buffer_changes = {}
 M._buffer_hunks = {}
-M._changes_win = nil
+M._buffer_stats = {}
+M._viewed_files = {}
+M._float_win_general = nil -- General info float (file x/total)
+M._float_win_buffer = nil  -- Buffer info float (hunks, stats, comments)
+M._float_win_keymaps = nil -- Keymaps float
+M._buffer_jumped = {} -- Track if we've already jumped to first change in buffer
+M._buffer_keymaps_saved = {} -- Track if we've saved keymaps for this buffer
+
+local function get_session_dir()
+  local data_path = vim.fn.stdpath("data")
+  return data_path .. "/pr-reviewer-sessions"
+end
+
+local function get_session_file()
+  local cwd = vim.fn.getcwd()
+  -- Convert path to safe filename: /home/otavio/Projetos/api -> review_home_otavio_Projetos_api
+  local safe_name = cwd:gsub("^/", ""):gsub("/", "_")
+  return get_session_dir() .. "/review_" .. safe_name .. ".json"
+end
+
+local function save_session()
+  if not vim.g.pr_review_number then
+    return
+  end
+
+  local session_dir = get_session_dir()
+  vim.fn.mkdir(session_dir, "p")
+
+  local session_data = {
+    pr_number = vim.g.pr_review_number,
+    previous_branch = vim.g.pr_review_previous_branch,
+    modified_files = vim.g.pr_review_modified_files,
+    viewed_files = M._viewed_files,
+    cwd = vim.fn.getcwd(),
+  }
+
+  local session_file = get_session_file()
+  local json_str = vim.fn.json_encode(session_data)
+  local file = io.open(session_file, "w")
+  if file then
+    file:write(json_str)
+    file:close()
+  end
+end
+
+local function load_session()
+  local session_file = get_session_file()
+  local file = io.open(session_file, "r")
+  if not file then
+    return nil
+  end
+
+  local content = file:read("*all")
+  file:close()
+
+  local ok, session_data = pcall(vim.fn.json_decode, content)
+  if not ok or not session_data then
+    return nil
+  end
+
+  return session_data
+end
+
+local function delete_session()
+  local session_file = get_session_file()
+  vim.fn.delete(session_file)
+end
 
 local function get_relative_path(bufnr)
   local full_path = vim.api.nvim_buf_get_name(bufnr)
@@ -81,21 +154,185 @@ local function get_changed_lines_for_file(file_path, callback)
   })
 end
 
-local function close_changes_win()
-  if M._changes_win and vim.api.nvim_win_is_valid(M._changes_win) then
-    vim.api.nvim_win_close(M._changes_win, true)
+-- Forward declaration
+local update_changes_float
+
+local function get_inline_diff(file_path, callback)
+  local cmd = string.format("git diff --unified=0 -- %s", vim.fn.shellescape(file_path))
+  vim.fn.jobstart(cmd, {
+    stdout_buffered = true,
+    on_stdout = function(_, data)
+      if not data then
+        vim.schedule(function()
+          callback({})
+        end)
+        return
+      end
+
+      local hunks = {}
+      local current_hunk = nil
+      local in_hunk = false
+
+      for _, line in ipairs(data) do
+        -- Parse hunk header: @@ -old_start,old_count +new_start,new_count @@
+        local old_start, old_count, new_start, new_count = line:match("^@@%s+%-(%d+),?(%d*)%s+%+(%d+),?(%d*)%s+@@")
+        if old_start then
+          old_start = tonumber(old_start)
+          old_count = tonumber(old_count) or 1
+          new_start = tonumber(new_start)
+          new_count = tonumber(new_count) or 1
+
+          current_hunk = {
+            old_start = old_start,
+            old_count = old_count,
+            new_start = new_start,
+            new_count = new_count,
+            removed_lines = {},
+            added_lines = {},
+          }
+          table.insert(hunks, current_hunk)
+          in_hunk = true
+        elseif in_hunk and current_hunk then
+          if line:match("^%-") and not line:match("^%-%-%- ") then
+            -- Removed line
+            table.insert(current_hunk.removed_lines, line:sub(2))
+          elseif line:match("^%+") and not line:match("^%+%+%+ ") then
+            -- Added line (current content)
+            table.insert(current_hunk.added_lines, line:sub(2))
+          end
+        end
+      end
+
+      vim.schedule(function()
+        callback(hunks)
+      end)
+    end,
+  })
+end
+
+local function display_inline_diff(bufnr, hunks)
+  if not M.config.show_inline_diff then
+    return
   end
-  M._changes_win = nil
+
+  vim.api.nvim_buf_clear_namespace(bufnr, diff_ns_id, 0, -1)
+
+  for _, hunk in ipairs(hunks) do
+    local new_line = hunk.new_start
+
+    -- Show removed lines as virtual text above the first added line
+    if #hunk.removed_lines > 0 then
+      -- Get the indentation of the current line to match it
+      local line_idx = new_line - 1
+      local current_line_content = ""
+      if line_idx >= 0 and line_idx < vim.api.nvim_buf_line_count(bufnr) then
+        current_line_content = vim.api.nvim_buf_get_lines(bufnr, line_idx, line_idx + 1, false)[1] or ""
+      end
+
+      -- Extract leading whitespace from current line
+      local indent = current_line_content:match("^%s*") or ""
+
+      local virt_lines = {}
+      for _, removed in ipairs(hunk.removed_lines) do
+        -- Remove any leading whitespace from removed line and add current indent
+        local stripped = removed:match("^%s*(.-)$") or removed
+        table.insert(virt_lines, { { indent .. "- " .. stripped, "DiffDelete" } })
+      end
+
+      -- Place virtual lines above the first new line
+      if line_idx >= 0 and line_idx < vim.api.nvim_buf_line_count(bufnr) then
+        vim.api.nvim_buf_set_extmark(bufnr, diff_ns_id, line_idx, 0, {
+          virt_lines_above = true,
+          virt_lines = virt_lines,
+        })
+      end
+    end
+
+    -- Highlight added/modified lines
+    for i = 0, hunk.new_count - 1 do
+      local line_idx = new_line + i - 1
+      if line_idx >= 0 and line_idx < vim.api.nvim_buf_line_count(bufnr) then
+        vim.api.nvim_buf_set_extmark(bufnr, diff_ns_id, line_idx, 0, {
+          line_hl_group = "DiffAdd",
+          sign_text = "+",
+          sign_hl_group = "DiffAdd",
+        })
+      end
+    end
+  end
 end
 
-local function has_gitsigns()
-  local ok, _ = pcall(require, "gitsigns")
-  return ok
+local function load_inline_diff_for_buffer(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+
+  if not vim.g.pr_review_number or not M.config.show_inline_diff then
+    return
+  end
+
+  local file_path = get_relative_path(bufnr)
+
+  get_inline_diff(file_path, function(hunks)
+    if hunks and #hunks > 0 then
+      -- Calculate stats
+      local additions = 0
+      local deletions = 0
+      local modifications = 0
+
+      for _, hunk in ipairs(hunks) do
+        local added = #hunk.added_lines
+        local removed = #hunk.removed_lines
+
+        if added > 0 and removed > 0 then
+          -- Lines were modified
+          modifications = modifications + math.min(added, removed)
+          additions = additions + math.max(0, added - removed)
+          deletions = deletions + math.max(0, removed - added)
+        elseif added > 0 then
+          -- Only additions
+          additions = additions + added
+        elseif removed > 0 then
+          -- Only deletions
+          deletions = deletions + removed
+        end
+      end
+
+      M._buffer_stats[bufnr] = {
+        additions = additions,
+        deletions = deletions,
+        modifications = modifications,
+      }
+
+      vim.schedule(function()
+        if vim.api.nvim_buf_is_valid(bufnr) then
+          display_inline_diff(bufnr, hunks)
+          -- Update the floating indicator immediately
+          if bufnr == vim.api.nvim_get_current_buf() then
+            vim.defer_fn(update_changes_float, 10)
+          end
+        end
+      end)
+    end
+  end)
 end
 
-local function update_changes_float()
+local function close_float_wins()
+  if M._float_win_general and vim.api.nvim_win_is_valid(M._float_win_general) then
+    vim.api.nvim_win_close(M._float_win_general, true)
+  end
+  if M._float_win_buffer and vim.api.nvim_win_is_valid(M._float_win_buffer) then
+    vim.api.nvim_win_close(M._float_win_buffer, true)
+  end
+  if M._float_win_keymaps and vim.api.nvim_win_is_valid(M._float_win_keymaps) then
+    vim.api.nvim_win_close(M._float_win_keymaps, true)
+  end
+  M._float_win_general = nil
+  M._float_win_buffer = nil
+  M._float_win_keymaps = nil
+end
+
+update_changes_float = function()
   if not vim.g.pr_review_number then
-    close_changes_win()
+    close_float_wins()
     return
   end
 
@@ -103,79 +340,229 @@ local function update_changes_float()
   local hunks = M._buffer_hunks[bufnr]
 
   if not hunks or #hunks == 0 then
-    close_changes_win()
+    close_float_wins()
     return
   end
 
+  -- Get quickfix info for general float
+  local qf_list = vim.fn.getqflist()
+  local qf_idx = vim.fn.getqflist({ idx = 0 }).idx
+  local total_files = #qf_list
+
+  -- Get cursor position for current hunk
   local cursor_line = vim.api.nvim_win_get_cursor(0)[1]
   local current_idx = 0
-
   for i, hunk in ipairs(hunks) do
     if cursor_line >= hunk.start_line then
       current_idx = i
     end
   end
-
   if current_idx == 0 then
     current_idx = 1
   end
 
   local comments = M._buffer_comments[bufnr]
   local comment_count = comments and #comments or 0
+  local stats = M._buffer_stats[bufnr]
+  local file_path = get_relative_path(bufnr)
+  local is_viewed = M._viewed_files[file_path] or false
 
-  local lines = {}
-  table.insert(lines, string.format(" %d/%d changes ", current_idx, #hunks))
+  -- FLOAT 1: General info (file x/total)
+  local general_lines = {}
+  if M.config.show_icons then
+    table.insert(general_lines, string.format(" 📁 File %d/%d ", qf_idx, total_files))
+  else
+    table.insert(general_lines, string.format(" File %d/%d ", qf_idx, total_files))
+  end
+
+  -- FLOAT 2: Buffer info (viewed, hunks, stats, comments)
+  local buffer_lines = {}
+  if M.config.show_icons then
+    local viewed_icon = is_viewed and "✓" or "○"
+    table.insert(buffer_lines, string.format(" %s %s ", viewed_icon, is_viewed and "Viewed" or "Not viewed"))
+  else
+    table.insert(buffer_lines, string.format(" [%s] ", is_viewed and "Viewed" or "Not viewed"))
+  end
+  table.insert(buffer_lines, string.format(" %d/%d changes ", current_idx, #hunks))
+  if stats then
+    table.insert(buffer_lines, string.format(" +%d ~%d -%d ", stats.additions, stats.modifications, stats.deletions))
+  end
   if comment_count > 0 then
     if M.config.show_icons then
-      table.insert(lines, string.format(" 💬 %d comments ", comment_count))
+      table.insert(buffer_lines, string.format(" 💬 %d comments ", comment_count))
     else
-      table.insert(lines, string.format(" %d comments ", comment_count))
-    end
-  end
-  if has_gitsigns() then
-    table.insert(lines, " <CR> preview hunk ")
-  end
-
-  local max_width = 0
-  for _, line in ipairs(lines) do
-    if #line > max_width then
-      max_width = #line
+      table.insert(buffer_lines, string.format(" %d comments ", comment_count))
     end
   end
 
-  local buf
-  if M._changes_win and vim.api.nvim_win_is_valid(M._changes_win) then
-    buf = vim.api.nvim_win_get_buf(M._changes_win)
-  else
-    buf = vim.api.nvim_create_buf(false, true)
-    vim.bo[buf].bufhidden = "wipe"
+  -- FLOAT 3: Keymaps
+  local keymap_lines = {}
+  table.insert(keymap_lines, string.format(" %s: Next hunk ", M.config.next_hunk_key))
+  table.insert(keymap_lines, string.format(" %s: Prev hunk ", M.config.prev_hunk_key))
+  table.insert(keymap_lines, string.format(" %s: Next file ", M.config.next_file_key))
+  table.insert(keymap_lines, string.format(" %s: Prev file ", M.config.prev_file_key))
+  table.insert(keymap_lines, string.format(" %s: Mark viewed ", M.config.mark_as_viewed_key))
+
+  -- Helper to create/update float
+  local function create_or_update_float(win_var, lines, row_offset, highlight)
+    local max_width = 0
+    for _, line in ipairs(lines) do
+      if #line > max_width then
+        max_width = #line
+      end
+    end
+
+    local buf
+    if win_var and vim.api.nvim_win_is_valid(win_var) then
+      buf = vim.api.nvim_win_get_buf(win_var)
+    else
+      buf = vim.api.nvim_create_buf(false, true)
+      vim.bo[buf].bufhidden = "wipe"
+    end
+
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+
+    if not win_var or not vim.api.nvim_win_is_valid(win_var) then
+      local new_win = vim.api.nvim_open_win(buf, false, {
+        relative = "win",
+        anchor = "NE",
+        width = max_width,
+        height = #lines,
+        row = row_offset,
+        col = vim.api.nvim_win_get_width(0),
+        style = "minimal",
+        border = "rounded",
+        focusable = false,
+        zindex = 50,
+      })
+      vim.api.nvim_set_option_value("winhl", highlight, { win = new_win })
+      return new_win
+    else
+      vim.api.nvim_win_set_config(win_var, {
+        relative = "win",
+        anchor = "NE",
+        width = max_width,
+        height = #lines,
+        row = row_offset,
+        col = vim.api.nvim_win_get_width(0),
+      })
+      return win_var
+    end
   end
 
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  -- Create the 3 floats stacked vertically
+  M._float_win_general = create_or_update_float(M._float_win_general, general_lines, 0, "Normal:DiagnosticInfo,FloatBorder:DiagnosticInfo")
 
-  if not M._changes_win or not vim.api.nvim_win_is_valid(M._changes_win) then
-    M._changes_win = vim.api.nvim_open_win(buf, false, {
-      relative = "win",
-      anchor = "NE",
-      width = max_width,
-      height = #lines,
-      row = 0,
-      col = vim.api.nvim_win_get_width(0),
-      style = "minimal",
-      border = "rounded",
-      focusable = false,
-      zindex = 50,
-    })
-    vim.api.nvim_set_option_value("winhl", "Normal:DiagnosticInfo,FloatBorder:DiagnosticInfo", { win = M._changes_win })
-  else
-    vim.api.nvim_win_set_config(M._changes_win, {
-      relative = "win",
-      anchor = "NE",
-      width = max_width,
-      height = #lines,
-      row = 0,
-      col = vim.api.nvim_win_get_width(0),
-    })
+  local general_height = #general_lines + 2 -- +2 for border
+  M._float_win_buffer = create_or_update_float(M._float_win_buffer, buffer_lines, general_height, "Normal:DiagnosticHint,FloatBorder:DiagnosticHint")
+
+  local buffer_height = #buffer_lines + 2
+  M._float_win_keymaps = create_or_update_float(M._float_win_keymaps, keymap_lines, general_height + buffer_height, "Normal:DiagnosticWarn,FloatBorder:DiagnosticWarn")
+end
+
+function M.mark_file_as_viewed_and_next()
+  if not vim.g.pr_review_number then
+    return
+  end
+
+  local bufnr = vim.api.nvim_get_current_buf()
+  local file_path = get_relative_path(bufnr)
+
+  -- Mark current file as viewed
+  M._viewed_files[file_path] = true
+
+  -- Save session
+  save_session()
+
+  -- Update the float to show new status
+  update_changes_float()
+
+  -- Go to next file in quickfix
+  local ok, err = pcall(vim.cmd, "cnext")
+  if not ok then
+    -- If we're at the last file, notify
+    if err:match("E553") then
+      vim.notify("Already at the last file", vim.log.levels.INFO)
+    end
+  end
+end
+
+function M.next_hunk()
+  if not vim.g.pr_review_number then
+    return
+  end
+
+  local bufnr = vim.api.nvim_get_current_buf()
+  local hunks = M._buffer_hunks[bufnr]
+
+  if not hunks or #hunks == 0 then
+    vim.notify("No hunks in this buffer", vim.log.levels.WARN)
+    return
+  end
+
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  local current_line = cursor[1]
+
+  -- Find the next hunk after the current cursor position
+  for _, hunk in ipairs(hunks) do
+    if hunk.start_line > current_line then
+      vim.api.nvim_win_set_cursor(0, { hunk.start_line, 0 })
+      return
+    end
+  end
+
+  -- If no hunk found after cursor, wrap to first hunk
+  vim.api.nvim_win_set_cursor(0, { hunks[1].start_line, 0 })
+end
+
+function M.prev_hunk()
+  if not vim.g.pr_review_number then
+    return
+  end
+
+  local bufnr = vim.api.nvim_get_current_buf()
+  local hunks = M._buffer_hunks[bufnr]
+
+  if not hunks or #hunks == 0 then
+    vim.notify("No hunks in this buffer", vim.log.levels.WARN)
+    return
+  end
+
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  local current_line = cursor[1]
+
+  -- Find the previous hunk before the current cursor position
+  for i = #hunks, 1, -1 do
+    local hunk = hunks[i]
+    if hunk.start_line < current_line then
+      vim.api.nvim_win_set_cursor(0, { hunk.start_line, 0 })
+      return
+    end
+  end
+
+  -- If no hunk found before cursor, wrap to last hunk
+  vim.api.nvim_win_set_cursor(0, { hunks[#hunks].start_line, 0 })
+end
+
+function M.next_file()
+  if not vim.g.pr_review_number then
+    return
+  end
+
+  local ok, err = pcall(vim.cmd, "cnext")
+  if not ok and err:match("E553") then
+    vim.notify("Already at the last file", vim.log.levels.INFO)
+  end
+end
+
+function M.prev_file()
+  if not vim.g.pr_review_number then
+    return
+  end
+
+  local ok, err = pcall(vim.cmd, "cprev")
+  if not ok and err:match("E553") then
+    vim.notify("Already at the first file", vim.log.levels.INFO)
   end
 end
 
@@ -204,13 +591,23 @@ local function load_changes_for_buffer(bufnr)
         end
       end
 
+      -- Setup buffer-local keymaps for files with changes (only once per buffer)
+      if not M._buffer_keymaps_saved[bufnr] then
+        vim.keymap.set("n", M.config.next_hunk_key, M.next_hunk, { buffer = bufnr, desc = "Jump to next hunk" })
+        vim.keymap.set("n", M.config.prev_hunk_key, M.prev_hunk, { buffer = bufnr, desc = "Jump to previous hunk" })
+        vim.keymap.set("n", M.config.next_file_key, M.next_file, { buffer = bufnr, desc = "Go to next file" })
+        vim.keymap.set("n", M.config.prev_file_key, M.prev_file, { buffer = bufnr, desc = "Go to previous file" })
+        vim.keymap.set("n", M.config.mark_as_viewed_key, M.mark_file_as_viewed_and_next, { buffer = bufnr, desc = "Mark as viewed and next" })
+        M._buffer_keymaps_saved[bufnr] = true
+      end
+
       if bufnr == vim.api.nvim_get_current_buf() then
         update_changes_float()
       end
     else
       M._buffer_changes[bufnr] = nil
       M._buffer_hunks[bufnr] = nil
-      close_changes_win()
+      close_float_wins()
     end
   end)
 end
@@ -365,6 +762,7 @@ local function input_multiline(prompt, callback)
 
   vim.keymap.set("n", "<Esc>", function()
     vim.api.nvim_win_close(win, true)
+    vim.cmd("stopinsert")
     callback(nil)
   end, { buffer = buf })
 
@@ -372,12 +770,16 @@ local function input_multiline(prompt, callback)
     local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
     local text = table.concat(lines, "\n")
     vim.api.nvim_win_close(win, true)
+    vim.cmd("stopinsert")
     if text ~= "" then
       callback(text)
     else
       callback(nil)
     end
   end, { buffer = buf })
+
+  -- Enter insert mode automatically
+  vim.cmd("startinsert")
 end
 
 function M.approve_pr()
@@ -591,12 +993,14 @@ function M.edit_my_comment()
 
       vim.keymap.set("n", "<Esc>", function()
         vim.api.nvim_win_close(win, true)
+        vim.cmd("stopinsert")
       end, { buffer = buf })
 
       vim.keymap.set({ "n", "i" }, "<C-s>", function()
         local new_lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
         local text = table.concat(new_lines, "\n")
         vim.api.nvim_win_close(win, true)
+        vim.cmd("stopinsert")
         if text ~= "" then
           vim.notify("Updating comment...", vim.log.levels.INFO)
           github.edit_comment(pr_number, comment.id, text, function(ok, edit_err)
@@ -609,6 +1013,9 @@ function M.edit_my_comment()
           end)
         end
       end, { buffer = buf })
+
+      -- Enter insert mode automatically
+      vim.cmd("startinsert")
     end
 
     if #my_comments == 1 then
@@ -690,6 +1097,54 @@ function M.delete_my_comment()
       end)
     end
   end)
+end
+
+function M.load_last_session()
+  if vim.g.pr_review_number then
+    vim.notify("Already in review mode. Use :PRReviewCleanup first.", vim.log.levels.WARN)
+    return
+  end
+
+  local session_data = load_session()
+  if not session_data then
+    vim.notify("No saved session found for this project", vim.log.levels.INFO)
+    return
+  end
+
+  -- Verify we're in the same directory
+  if session_data.cwd ~= vim.fn.getcwd() then
+    vim.notify("Session is for a different directory: " .. session_data.cwd, vim.log.levels.WARN)
+    return
+  end
+
+  vim.notify("Loading review session for PR #" .. session_data.pr_number .. "...", vim.log.levels.INFO)
+
+  -- Restore global state
+  vim.g.pr_review_number = session_data.pr_number
+  vim.g.pr_review_previous_branch = session_data.previous_branch
+  vim.g.pr_review_modified_files = session_data.modified_files
+  M._viewed_files = session_data.viewed_files or {}
+
+  -- Populate quickfix with modified files
+  if session_data.modified_files and #session_data.modified_files > 0 then
+    local qf_list = {}
+    for _, file in ipairs(session_data.modified_files) do
+      if file.status ~= "D" then
+        table.insert(qf_list, {
+          filename = file.path,
+          lnum = 1,
+          text = file.status,
+        })
+      end
+    end
+    if #qf_list > 0 then
+      vim.fn.setqflist(qf_list)
+      vim.cmd("copen")
+      vim.cmd("cfirst")
+    end
+  end
+
+  vim.notify("✅ Session restored for PR #" .. session_data.pr_number, vim.log.levels.INFO)
 end
 
 function M.show_pr_info()
@@ -926,7 +1381,7 @@ function M._start_review_for_pr(pr)
         vim.g.pr_review_number = pr.number
 
         vim.notify(
-          string.format("✅ Ready to review PR #%s: %s\nChanges are unstaged. Use lazygit or :Git diff to review.", pr.number, pr.title),
+          string.format("✅ Ready to review PR #%s: %s", pr.number, pr.title),
           vim.log.levels.INFO
         )
 
@@ -935,6 +1390,9 @@ function M._start_review_for_pr(pr)
             vim.g.pr_review_modified_files = vim.tbl_map(function(f)
               return { path = f.path, status = f.status }
             end, files)
+
+            -- Save initial session
+            save_session()
 
             if M.config.open_files_on_review then
               local qf_list = {}
@@ -1015,6 +1473,10 @@ function M.setup(opts)
     M.open_pr()
   end, { desc = "Open PR in browser" })
 
+  vim.api.nvim_create_user_command("PRLoadLastSession", function()
+    M.load_last_session()
+  end, { desc = "Load last PR review session" })
+
   local augroup = vim.api.nvim_create_augroup("PRReviewComments", { clear = true })
   vim.api.nvim_create_autocmd("BufEnter", {
     group = augroup,
@@ -1022,6 +1484,19 @@ function M.setup(opts)
       if vim.g.pr_review_number then
         M.load_comments_for_buffer(args.buf)
         load_changes_for_buffer(args.buf)
+        load_inline_diff_for_buffer(args.buf)
+
+        -- Jump to first change if we haven't already for this buffer
+        -- Note: keymaps are now set in load_changes_for_buffer callback, only for files with changes
+        if not M._buffer_jumped[args.buf] then
+          vim.defer_fn(function()
+            local hunks = M._buffer_hunks[args.buf]
+            if hunks and #hunks > 0 and vim.api.nvim_get_current_buf() == args.buf then
+              vim.api.nvim_win_set_cursor(0, { hunks[1].start_line, 0 })
+              M._buffer_jumped[args.buf] = true
+            end
+          end, 100)
+        end
       end
     end,
   })
@@ -1047,21 +1522,25 @@ function M.setup(opts)
   vim.api.nvim_create_autocmd("WinLeave", {
     group = augroup,
     callback = function()
-      close_changes_win()
+      close_float_wins()
     end,
   })
 
-  -- Setup <CR> mapping for gitsigns preview_hunk when in PR review mode
-  if has_gitsigns() then
-    vim.keymap.set("n", "<CR>", function()
-      if vim.g.pr_review_number then
-        require("gitsigns").preview_hunk()
-      else
-        -- Default <CR> behavior
-        vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "n", false)
-      end
-    end, { desc = "Preview hunk (PR review) or default <CR>" })
-  end
+  vim.api.nvim_create_autocmd("BufDelete", {
+    group = augroup,
+    callback = function(args)
+      -- Clean up tracking when buffer is deleted
+      M._buffer_keymaps_saved[args.buf] = nil
+      M._buffer_jumped[args.buf] = nil
+      M._buffer_comments[args.buf] = nil
+      M._buffer_changes[args.buf] = nil
+      M._buffer_hunks[args.buf] = nil
+      M._buffer_stats[args.buf] = nil
+    end,
+  })
+
+  -- Note: Keymaps are now set as buffer-local in the BufEnter autocmd
+  -- This ensures they only work during review mode and don't conflict with existing keymaps
 end
 
 function M.review_pr()
@@ -1119,7 +1598,7 @@ function M.review_pr()
           vim.g.pr_review_number = pr.number
 
           vim.notify(
-            string.format("Ready to review PR #%s: %s\nChanges are unstaged. Use lazygit or :Git diff to review.", pr.number, pr.title),
+            string.format("✅ Ready to review PR #%s: %s", pr.number, pr.title),
             vim.log.levels.INFO
           )
 
@@ -1128,6 +1607,9 @@ function M.review_pr()
               vim.g.pr_review_modified_files = vim.tbl_map(function(f)
                 return { path = f.path, status = f.status }
               end, files)
+
+              -- Save initial session
+              save_session()
 
               if M.config.open_files_on_review then
                 local qf_list = {}
@@ -1165,17 +1647,29 @@ function M.cleanup_review_branch()
 
   git.cleanup_review(current, target, function(ok, err)
     if ok then
+      delete_session()
       vim.g.pr_review_number = nil
       github.clear_cache()
       M._buffer_comments = {}
       M._buffer_changes = {}
       M._buffer_hunks = {}
-      close_changes_win()
+      M._buffer_stats = {}
+      M._viewed_files = {}
+      M._buffer_jumped = {}
+      M._buffer_keymaps_saved = {}
+      close_float_wins()
 
       for _, buf in ipairs(vim.api.nvim_list_bufs()) do
         if vim.api.nvim_buf_is_valid(buf) then
           vim.api.nvim_buf_clear_namespace(buf, ns_id, 0, -1)
           vim.api.nvim_buf_clear_namespace(buf, changes_ns_id, 0, -1)
+          vim.api.nvim_buf_clear_namespace(buf, diff_ns_id, 0, -1)
+          -- Delete buffer-local keymaps
+          pcall(vim.keymap.del, "n", M.config.next_hunk_key, { buffer = buf })
+          pcall(vim.keymap.del, "n", M.config.prev_hunk_key, { buffer = buf })
+          pcall(vim.keymap.del, "n", M.config.next_file_key, { buffer = buf })
+          pcall(vim.keymap.del, "n", M.config.prev_file_key, { buffer = buf })
+          pcall(vim.keymap.del, "n", M.config.mark_as_viewed_key, { buffer = buf })
         end
       end
 

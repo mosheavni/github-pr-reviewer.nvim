@@ -72,6 +72,24 @@ require("pr-reviewer").setup({
 
   -- Show icons/emojis in UI (set to false for a text-only interface)
   show_icons = true,
+
+  -- Show inline diff in buffers (old lines as virtual text above changes)
+  show_inline_diff = true,
+
+  -- Key to mark file as viewed and go to next file (only works in review mode)
+  mark_as_viewed_key = "<CR>",
+
+  -- Key to jump to next hunk (only works in review mode)
+  next_hunk_key = "<C-j>",
+
+  -- Key to jump to previous hunk (only works in review mode)
+  prev_hunk_key = "<C-k>",
+
+  -- Key to go to next file in quickfix (only works in review mode)
+  next_file_key = "<C-l>",
+
+  -- Key to go to previous file in quickfix (only works in review mode)
+  prev_file_key = "<C-h>",
 })
 ```
 
@@ -86,6 +104,7 @@ require("pr-reviewer").setup({
 | `:PRReviewCleanup` | End review, clean up changes, return to previous branch |
 | `:PRInfo` | Show PR information (stats, reviews, merge status) |
 | `:PROpen` | Open PR in browser |
+| `:PRLoadLastSession` | Restore last PR review session (after restarting Neovim) |
 
 ### Comments
 
@@ -130,15 +149,19 @@ The fzf-lua picker shows a hint header with available actions.
 
 ### Navigating Changes
 
-The plugin works great with [gitsigns.nvim](https://github.com/lewis6991/gitsigns.nvim) for navigating changes:
+The plugin includes built-in navigation that only works during PR review mode:
 
-```lua
--- Recommended gitsigns keymaps for PR review
-vim.keymap.set("n", "]h", function() require("gitsigns").next_hunk() end, { desc = "Next hunk" })
-vim.keymap.set("n", "[h", function() require("gitsigns").prev_hunk() end, { desc = "Previous hunk" })
-```
+**Hunk Navigation** (within a file):
+- `<C-j>` (default) - Jump to next hunk
+- `<C-k>` (default) - Jump to previous hunk
 
-You can also use the quickfix list:
+**File Navigation** (between modified files):
+- `<C-l>` (default) - Go to next file in quickfix
+- `<C-h>` (default) - Go to previous file in quickfix
+
+All keybindings are configurable in setup and only activate during PR review mode (won't interfere with normal usage).
+
+You can also use the quickfix list commands:
 
 - `:cnext` or `]q` - Go to next modified file
 - `:cprev` or `[q` - Go to previous modified file
@@ -147,15 +170,66 @@ You can also use the quickfix list:
 
 ### Change Progress Indicator
 
-When reviewing a file with changes, you'll see a floating indicator in the top-right corner showing your progress:
+When reviewing a file with changes, you'll see a floating indicator in the top-right corner showing:
 
 ```
-┌──────────────┐
-│ 2/5 changes  │
-└──────────────┘
+┌──────────────────────────┐
+│ ✓ Viewed                 │
+│ 2/5 changes              │
+│ +15 ~3 -8                │
+│ 💬 2 comments            │
+│ <CR>: Mark as viewed     │
+└──────────────────────────┘
 ```
 
-This groups consecutive changed lines together, so 10 modified lines in a row count as 1 change.
+- **Viewed status**: Shows if the current file has been marked as viewed
+- **Change progress**: Current change position (groups consecutive changed lines together)
+- **Stats**: +additions ~modifications -deletions
+- **Comments**: Number of PR comments in this file
+- **Mark as viewed**: Press the configured key (default `<CR>`) to mark the file as viewed and jump to the next file in the quickfix list
+
+**Note**: The mark as viewed key only works during PR review mode and won't interfere with normal usage.
+
+### Session Persistence
+
+The plugin automatically saves your review session state, allowing you to resume where you left off after restarting Neovim:
+
+- **Auto-save**: Session is saved when you start a review and whenever you mark files as viewed
+- **Per-project**: Each project directory gets its own session file
+- **What's saved**: PR number, previous branch, modified files list, and viewed files status
+- **Auto-cleanup**: Session file is deleted when you run `:PRReviewCleanup`
+
+To restore a session after restarting Neovim:
+
+```vim
+:PRLoadLastSession
+```
+
+This will:
+- Restore the PR review state
+- Re-populate the quickfix list with modified files
+- Restore your viewed files status
+- Continue from where you left off
+
+Session files are stored in `~/.local/share/nvim/pr-reviewer-sessions/` (or equivalent on your platform).
+
+### Inline Diff View
+
+When `show_inline_diff` is enabled, the plugin displays the diff directly in your buffer:
+
+- **Removed lines** appear as virtual text above the changed section (highlighted with `DiffDelete`)
+- **Added/modified lines** are highlighted with `DiffAdd` and marked with a `+` sign
+- This works **without gitsigns**, using native Neovim extmarks
+
+Example visualization:
+```
+  - old line that was removed
+  - another old line
++ new line that replaced them
++ another new line
+```
+
+Set `show_inline_diff = false` if you prefer to use gitsigns or another diff tool.
 
 ### Viewing and Adding Comments
 
@@ -240,19 +314,21 @@ vim.keymap.set("n", "[q", ":cprev<CR>", { desc = "Previous quickfix" })
 
 ## Integration with Other Plugins
 
-### gitsigns.nvim (Highly Recommended)
+### gitsigns.nvim (Optional)
 
-**gitsigns.nvim is highly recommended for the best PR review experience.** Since PR changes appear as unstaged modifications, gitsigns will:
+**gitsigns.nvim is optional** - the plugin now has built-in inline diff visualization. However, gitsigns can still be useful for:
 
-- Highlight changed lines in the sign column
-- Enable hunk navigation with `]h` and `[h`
-- Provide `preview_hunk` to see the diff inline
+- Hunk navigation with `]h` and `[h`
+- Interactive hunk staging/unstaging
+- Additional git blame and diff features
 
-When gitsigns is installed and you're in PR review mode:
-- Press `<CR>` (Enter) to preview the current hunk
-- The floating indicator in the top-right will show `<CR> preview hunk` as a reminder
+If you prefer to use gitsigns instead of the built-in inline diff, set `show_inline_diff = false`:
 
 ```lua
+require("pr-reviewer").setup({
+  show_inline_diff = false,  -- Disable built-in diff, use gitsigns instead
+})
+
 require("gitsigns").setup({
   -- your gitsigns config
 })
