@@ -16,6 +16,21 @@ M.config = {
   prev_hunk_key = "<C-k>", -- key to jump to previous hunk
   next_file_key = "<C-l>", -- key to go to next file in quickfix
   prev_file_key = "<C-h>", -- key to go to previous file in quickfix
+
+  -- Review buffer settings
+  review_buffer = {
+    position = "left", -- "left", "right", "top", "bottom"
+    width = 50, -- width for left/right
+    height = 20, -- height for top/bottom
+    group_by_directory = true, -- group files by directory
+    sort_by = "path", -- "path", "status", "changes"
+    filter_viewed_key = "fv", -- filter: show only viewed
+    filter_not_viewed_key = "fn", -- filter: show only not viewed
+    filter_all_key = "fa", -- filter: show all
+    open_split_key = "s", -- open file in horizontal split
+    open_vsplit_key = "v", -- open file in vertical split
+    toggle_key = "<C-e>", -- toggle review buffer open/close
+  },
 }
 
 local ns_id = vim.api.nvim_create_namespace("pr_review_comments")
@@ -32,6 +47,14 @@ M._float_win_buffer = nil  -- Buffer info float (hunks, stats, comments)
 M._float_win_keymaps = nil -- Keymaps float
 M._buffer_jumped = {} -- Track if we've already jumped to first change in buffer
 M._buffer_keymaps_saved = {} -- Track if we've saved keymaps for this buffer
+
+-- Review buffer state
+M._review_buffer = nil -- Review buffer number
+M._review_window = nil -- Review window ID
+M._review_files = {} -- List of files with metadata
+M._review_files_ordered = {} -- Ordered list matching ReviewBuffer display order
+M._review_filter = "all" -- Current filter: "all", "viewed", "not_viewed"
+M._review_sort = nil -- Current sort (uses config default)
 
 local function get_session_dir()
   local data_path = vim.fn.stdpath("data")
@@ -93,6 +116,107 @@ local function delete_session()
   vim.fn.delete(session_file)
 end
 
+-- Forward declarations
+local get_inline_diff
+
+-- Collect all files from PR with their metadata
+local function collect_pr_files(callback)
+  -- First get tracked changes (M, A, D)
+  local cmd = "git diff --name-status HEAD"
+  vim.fn.jobstart(cmd, {
+    stdout_buffered = true,
+    on_stdout = function(_, data)
+      if not data then
+        vim.schedule(function()
+          callback({})
+        end)
+        return
+      end
+
+      local files = {}
+      for _, line in ipairs(data) do
+        -- Format: M\tfile/path.txt or A\tfile/path.txt or D\tfile/path.txt
+        local status, path = line:match("^([AMD])%s+(.+)$")
+        if status and path then
+          table.insert(files, {
+            path = path,
+            status = status, -- M=modified, A=added, D=deleted
+            viewed = M._viewed_files[path] or false,
+            stats = { additions = 0, modifications = 0, deletions = 0 },
+          })
+        end
+      end
+
+      -- Now get untracked files
+      local untracked_cmd = "git ls-files --others --exclude-standard"
+      vim.fn.jobstart(untracked_cmd, {
+        stdout_buffered = true,
+        on_stdout = function(_, untracked_data)
+          if untracked_data then
+            for _, line in ipairs(untracked_data) do
+              if line and line ~= "" then
+                table.insert(files, {
+                  path = line,
+                  status = "N", -- new/untracked
+                  viewed = M._viewed_files[line] or false,
+                  stats = { additions = 0, modifications = 0, deletions = 0 },
+                })
+              end
+            end
+          end
+
+          -- Now get stats for each file
+          local pending = #files
+          if pending == 0 then
+            vim.schedule(function()
+              callback(files)
+            end)
+            return
+          end
+
+          for _, file in ipairs(files) do
+            get_inline_diff(file.path, file.status, function(hunks)
+              if hunks and #hunks > 0 then
+                local additions = 0
+                local deletions = 0
+                local modifications = 0
+
+                for _, hunk in ipairs(hunks) do
+                  local added = #hunk.added_lines
+                  local removed = #hunk.removed_lines
+
+                  if added > 0 and removed > 0 then
+                    modifications = modifications + math.min(added, removed)
+                    additions = additions + math.max(0, added - removed)
+                    deletions = deletions + math.max(0, removed - added)
+                  elseif added > 0 then
+                    additions = additions + added
+                  elseif removed > 0 then
+                    deletions = deletions + removed
+                  end
+                end
+
+                file.stats = {
+                  additions = additions,
+                  modifications = modifications,
+                  deletions = deletions,
+                }
+              end
+
+              pending = pending - 1
+              if pending == 0 then
+                vim.schedule(function()
+                  callback(files)
+                end)
+              end
+            end)
+          end
+        end,
+      })
+    end,
+  })
+end
+
 local function get_relative_path(bufnr)
   local full_path = vim.api.nvim_buf_get_name(bufnr)
   local cwd = vim.fn.getcwd()
@@ -102,8 +226,14 @@ local function get_relative_path(bufnr)
   return full_path
 end
 
-local function get_changed_lines_for_file(file_path, callback)
-  local cmd = string.format("git diff --unified=0 -- %s", vim.fn.shellescape(file_path))
+local function get_changed_lines_for_file(file_path, status, callback)
+  local cmd
+  if status == "N" then
+    -- For new/untracked files, compare with /dev/null
+    cmd = string.format("git diff --unified=0 --no-index /dev/null -- %s", vim.fn.shellescape(file_path))
+  else
+    cmd = string.format("git diff --unified=0 HEAD -- %s", vim.fn.shellescape(file_path))
+  end
   vim.fn.jobstart(cmd, {
     stdout_buffered = true,
     on_stdout = function(_, data)
@@ -157,8 +287,15 @@ end
 -- Forward declaration
 local update_changes_float
 
-local function get_inline_diff(file_path, callback)
-  local cmd = string.format("git diff --unified=0 -- %s", vim.fn.shellescape(file_path))
+get_inline_diff = function(file_path, status, callback)
+  -- For new/untracked files, use a different command to get all lines
+  local cmd
+  if status == "A" or status == "N" then
+    cmd = string.format("git diff --unified=0 --no-index /dev/null -- %s", vim.fn.shellescape(file_path))
+  else
+    cmd = string.format("git diff --unified=0 HEAD -- %s", vim.fn.shellescape(file_path))
+  end
+
   vim.fn.jobstart(cmd, {
     stdout_buffered = true,
     on_stdout = function(_, data)
@@ -271,7 +408,16 @@ local function load_inline_diff_for_buffer(bufnr)
 
   local file_path = get_relative_path(bufnr)
 
-  get_inline_diff(file_path, function(hunks)
+  -- Find status from review files
+  local status = "M" -- default to modified
+  for _, file in ipairs(M._review_files) do
+    if file.path == file_path then
+      status = file.status
+      break
+    end
+  end
+
+  get_inline_diff(file_path, status, function(hunks)
     if hunks and #hunks > 0 then
       -- Calculate stats
       local additions = 0
@@ -330,6 +476,394 @@ local function close_float_wins()
   M._float_win_keymaps = nil
 end
 
+-- Group files by directory
+local function group_files_by_directory(files)
+  local grouped = {}
+  for _, file in ipairs(files) do
+    local dir = file.path:match("(.+)/[^/]+$") or "."
+    if not grouped[dir] then
+      grouped[dir] = {}
+    end
+    table.insert(grouped[dir], file)
+  end
+  return grouped
+end
+
+-- Render the review buffer
+local function render_review_buffer()
+  if not M._review_buffer or not vim.api.nvim_buf_is_valid(M._review_buffer) then
+    return
+  end
+
+  -- Get current file to highlight it
+  local current_file_path = nil
+  local current_buf = vim.api.nvim_get_current_buf()
+  if current_buf and vim.api.nvim_buf_is_valid(current_buf) then
+    current_file_path = get_relative_path(current_buf)
+  end
+
+  local lines = {}
+  local highlights = {}
+  local file_map = {} -- Maps line number to file
+  M._review_files_ordered = {} -- Reset ordered list
+
+  -- Header
+  local cfg = M.config.review_buffer
+  table.insert(lines, "═══ PR Review ═══")
+  table.insert(lines, "")
+  table.insert(lines, string.format("[%s] Toggle | [q] Close", cfg.toggle_key))
+  table.insert(lines, string.format("Filters: [%s] All  [%s] Viewed  [%s] Not Viewed", cfg.filter_all_key, cfg.filter_viewed_key, cfg.filter_not_viewed_key))
+  table.insert(lines, string.format("Open: [<CR>] Current  [%s] Split  [%s] VSplit", cfg.open_split_key, cfg.open_vsplit_key))
+  table.insert(lines, string.format("Sort: %s | Filter: %s", M._review_sort or cfg.sort_by, M._review_filter))
+  table.insert(lines, "")
+
+  -- Filter files based on current filter
+  local filtered_files = {}
+  for _, file in ipairs(M._review_files) do
+    if M._review_filter == "all" then
+      table.insert(filtered_files, file)
+    elseif M._review_filter == "viewed" and file.viewed then
+      table.insert(filtered_files, file)
+    elseif M._review_filter == "not_viewed" and not file.viewed then
+      table.insert(filtered_files, file)
+    end
+  end
+
+  -- Group and sort
+  if cfg.group_by_directory then
+    local grouped = group_files_by_directory(filtered_files)
+    local dirs = vim.tbl_keys(grouped)
+    table.sort(dirs)
+
+    for _, dir in ipairs(dirs) do
+      table.insert(lines, string.format("📁 %s/", dir))
+      table.insert(highlights, { line = #lines - 1, hl_group = "Directory" })
+
+      for _, file in ipairs(grouped[dir]) do
+        -- Add to ordered list
+        table.insert(M._review_files_ordered, file)
+
+        local filename = file.path:match("[^/]+$")
+        local status_icon = file.status == "M" and "M" or (file.status == "A" and "A" or (file.status == "D" and "D" or "N"))
+        local viewed_icon = file.viewed and (M.config.show_icons and "✓" or "[V]") or (M.config.show_icons and "○" or "[ ]")
+        local stats_str = string.format("+%d ~%d -%d", file.stats.additions, file.stats.modifications, file.stats.deletions)
+
+        -- Add indicator for current file
+        local current_indicator = ""
+        if current_file_path and file.path == current_file_path then
+          current_indicator = M.config.show_icons and " ➤" or " >"
+        end
+
+        local line = string.format("  %s %s %s  %s%s", viewed_icon, status_icon, filename, stats_str, current_indicator)
+        local line_idx = #lines + 1
+        table.insert(lines, line)
+        file_map[line_idx] = file
+
+        -- Calculate filename position in the line for highlighting
+        local filename_start = string.len("  " .. viewed_icon .. " " .. status_icon .. " ")
+        local filename_end = filename_start + string.len(filename)
+
+        -- Highlight based on status or if current file
+        if current_file_path and file.path == current_file_path then
+          -- Highlight entire line for current file
+          table.insert(highlights, { line = line_idx - 1, hl_group = "CursorLine" })
+          -- Highlight filename with special color
+          table.insert(highlights, { line = line_idx - 1, hl_group = "Search", start_col = filename_start, end_col = filename_end })
+        else
+          -- Apply viewed dimming
+          if file.viewed then
+            table.insert(highlights, { line = line_idx - 1, hl_group = "Comment" })
+          elseif file.status == "A" or file.status == "N" then
+            table.insert(highlights, { line = line_idx - 1, hl_group = "DiffAdd" })
+          elseif file.status == "D" then
+            table.insert(highlights, { line = line_idx - 1, hl_group = "DiffDelete" })
+          elseif file.status == "M" then
+            table.insert(highlights, { line = line_idx - 1, hl_group = "DiffChange" })
+          end
+        end
+      end
+      table.insert(lines, "")
+    end
+  else
+    -- Flat list
+    for _, file in ipairs(filtered_files) do
+      -- Add to ordered list
+      table.insert(M._review_files_ordered, file)
+
+      local status_icon = file.status == "M" and "M" or (file.status == "A" and "A" or (file.status == "D" and "D" or "N"))
+      local viewed_icon = file.viewed and (M.config.show_icons and "✓" or "[V]") or (M.config.show_icons and "○" or "[ ]")
+      local stats_str = string.format("+%d ~%d -%d", file.stats.additions, file.stats.modifications, file.stats.deletions)
+
+      -- Add indicator for current file
+      local current_indicator = ""
+      if current_file_path and file.path == current_file_path then
+        current_indicator = M.config.show_icons and " ➤" or " >"
+      end
+
+      local line = string.format("%s %s %s  %s%s", viewed_icon, status_icon, file.path, stats_str, current_indicator)
+      local line_idx = #lines + 1
+      table.insert(lines, line)
+      file_map[line_idx] = file
+
+      -- Calculate file path position in the line for highlighting
+      local filepath_start = string.len(viewed_icon .. " " .. status_icon .. " ")
+      local filepath_end = filepath_start + string.len(file.path)
+
+      -- Highlight based on status or if current file
+      if current_file_path and file.path == current_file_path then
+        -- Highlight entire line for current file
+        table.insert(highlights, { line = line_idx - 1, hl_group = "CursorLine" })
+        -- Highlight filepath with special color
+        table.insert(highlights, { line = line_idx - 1, hl_group = "Search", start_col = filepath_start, end_col = filepath_end })
+      else
+        -- Apply viewed dimming
+        if file.viewed then
+          table.insert(highlights, { line = line_idx - 1, hl_group = "Comment" })
+        elseif file.status == "A" or file.status == "N" then
+          table.insert(highlights, { line = line_idx - 1, hl_group = "DiffAdd" })
+        elseif file.status == "D" then
+          table.insert(highlights, { line = line_idx - 1, hl_group = "DiffDelete" })
+        elseif file.status == "M" then
+          table.insert(highlights, { line = line_idx - 1, hl_group = "DiffChange" })
+        end
+      end
+    end
+  end
+
+  -- Set lines
+  vim.api.nvim_buf_set_option(M._review_buffer, "modifiable", true)
+  vim.api.nvim_buf_set_lines(M._review_buffer, 0, -1, false, lines)
+  vim.api.nvim_buf_set_option(M._review_buffer, "modifiable", false)
+
+  -- Apply highlights
+  local ns = vim.api.nvim_create_namespace("pr_review_buffer")
+  vim.api.nvim_buf_clear_namespace(M._review_buffer, ns, 0, -1)
+  for _, hl in ipairs(highlights) do
+    if hl.start_col and hl.end_col then
+      -- Highlight specific range (for file name)
+      vim.api.nvim_buf_add_highlight(M._review_buffer, ns, hl.hl_group, hl.line, hl.start_col, hl.end_col)
+    else
+      -- Highlight entire line
+      vim.api.nvim_buf_add_highlight(M._review_buffer, ns, hl.hl_group, hl.line, 0, -1)
+    end
+  end
+
+  -- Store file map in buffer variable
+  vim.b[M._review_buffer].pr_file_map = file_map
+end
+
+-- Open file from review buffer (handles deleted files)
+local function open_file_from_review(split_type)
+  local bufnr = vim.api.nvim_get_current_buf()
+  local file_map = vim.b[bufnr].pr_file_map
+  if not file_map or type(file_map) ~= "table" then
+    -- Silently return for header lines
+    return
+  end
+
+  local line = vim.api.nvim_win_get_cursor(0)[1]
+  local file = file_map[line]
+
+  if not file or type(file) ~= "table" or not file.path then
+    -- Silently return for header/separator lines
+    return
+  end
+
+  -- Handle split commands
+  if split_type == "split" then
+    vim.cmd("split")
+  elseif split_type == "vsplit" then
+    vim.cmd("vsplit")
+  end
+
+  -- Use the safe open function
+  open_file_safe(file)
+end
+
+-- Toggle filter
+local function set_review_filter(filter)
+  M._review_filter = filter
+  render_review_buffer()
+end
+
+-- Setup keymaps for review buffer
+local function setup_review_buffer_keymaps(bufnr)
+  local cfg = M.config.review_buffer
+  local opts = { buffer = bufnr, silent = true }
+
+  -- Open file
+  vim.keymap.set("n", "<CR>", function() open_file_from_review(nil) end, opts)
+  vim.keymap.set("n", cfg.open_split_key, function() open_file_from_review("split") end, opts)
+  vim.keymap.set("n", cfg.open_vsplit_key, function() open_file_from_review("vsplit") end, opts)
+
+  -- Filters
+  vim.keymap.set("n", cfg.filter_all_key, function() set_review_filter("all") end, opts)
+  vim.keymap.set("n", cfg.filter_viewed_key, function() set_review_filter("viewed") end, opts)
+  vim.keymap.set("n", cfg.filter_not_viewed_key, function() set_review_filter("not_viewed") end, opts)
+
+  -- Mark as viewed (same key as in file buffers)
+  vim.keymap.set("n", M.config.mark_as_viewed_key, function()
+    local buf = vim.api.nvim_get_current_buf()
+    local file_map = vim.b[buf].pr_file_map
+    if not file_map or type(file_map) ~= "table" then return end
+
+    local line = vim.api.nvim_win_get_cursor(0)[1]
+    local file = file_map[line]
+
+    if file and type(file) == "table" and file.path then
+      file.viewed = true
+      M._viewed_files[file.path] = true
+      save_session()
+      render_review_buffer()
+      -- Move to next file
+      vim.cmd("normal! j")
+    end
+  end, opts)
+
+  -- Close buffer
+  vim.keymap.set("n", "q", function()
+    if M._review_window and vim.api.nvim_win_is_valid(M._review_window) then
+      vim.api.nvim_win_close(M._review_window, true)
+    end
+    M._review_window = nil
+  end, opts)
+end
+
+-- Open or refresh review buffer
+function M.open_review_buffer(callback)
+  if not vim.g.pr_review_number then
+    vim.notify("Not in review mode", vim.log.levels.WARN)
+    return
+  end
+
+  -- Collect files if not already collected
+  if #M._review_files == 0 then
+    collect_pr_files(function(files)
+      M._review_files = files
+      M.open_review_buffer(callback) -- Recursive call after files are loaded
+    end)
+    return
+  end
+
+  -- Create buffer if it doesn't exist
+  if not M._review_buffer or not vim.api.nvim_buf_is_valid(M._review_buffer) then
+    M._review_buffer = vim.api.nvim_create_buf(false, true)
+
+    -- Try to set name, if it fails (buffer already exists), wipe the old one
+    local success, err = pcall(vim.api.nvim_buf_set_name, M._review_buffer, "PR Review")
+    if not success then
+      -- Find and delete the existing buffer with this name
+      for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+        if vim.api.nvim_buf_is_valid(buf) and vim.api.nvim_buf_get_name(buf):match("PR Review$") then
+          vim.api.nvim_buf_delete(buf, { force = true })
+        end
+      end
+      -- Try again
+      vim.api.nvim_buf_set_name(M._review_buffer, "PR Review")
+    end
+
+    vim.api.nvim_buf_set_option(M._review_buffer, "buftype", "nofile")
+    vim.api.nvim_buf_set_option(M._review_buffer, "bufhidden", "hide")
+    vim.api.nvim_buf_set_option(M._review_buffer, "swapfile", false)
+    vim.api.nvim_buf_set_option(M._review_buffer, "filetype", "pr-review")
+
+    setup_review_buffer_keymaps(M._review_buffer)
+  end
+
+  -- Render content
+  render_review_buffer()
+
+  -- Open window if not already open
+  if not M._review_window or not vim.api.nvim_win_is_valid(M._review_window) then
+    local cfg = M.config.review_buffer
+    local win_cmd
+
+    if cfg.position == "left" then
+      win_cmd = string.format("topleft vertical %d split", cfg.width)
+    elseif cfg.position == "right" then
+      win_cmd = string.format("botright vertical %d split", cfg.width)
+    elseif cfg.position == "top" then
+      win_cmd = string.format("topleft %d split", cfg.height)
+    else -- bottom
+      win_cmd = string.format("botright %d split", cfg.height)
+    end
+
+    vim.cmd(win_cmd)
+    M._review_window = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_buf(M._review_window, M._review_buffer)
+    vim.api.nvim_win_set_option(M._review_window, "number", false)
+    vim.api.nvim_win_set_option(M._review_window, "relativenumber", false)
+    vim.api.nvim_win_set_option(M._review_window, "signcolumn", "no")
+    vim.api.nvim_win_set_option(M._review_window, "wrap", false)
+
+    -- Return to previous window
+    vim.cmd("wincmd p")
+  end
+
+  -- Call callback if provided
+  if callback then
+    callback()
+  end
+end
+
+-- Refresh review buffer (call when files are marked as viewed)
+function M.refresh_review_buffer()
+  if M._review_buffer and vim.api.nvim_buf_is_valid(M._review_buffer) then
+    -- Update viewed status in files list
+    for _, file in ipairs(M._review_files) do
+      file.viewed = M._viewed_files[file.path] or false
+    end
+    render_review_buffer()
+  end
+end
+
+-- Toggle review buffer (open/close)
+function M.toggle_review_buffer()
+  if not vim.g.pr_review_number then
+    vim.notify("Not in review mode", vim.log.levels.WARN)
+    return
+  end
+
+  -- Check if window is open
+  if M._review_window and vim.api.nvim_win_is_valid(M._review_window) then
+    -- Close it
+    vim.api.nvim_win_close(M._review_window, true)
+    M._review_window = nil
+  else
+    -- Open it
+    M.open_review_buffer()
+  end
+end
+
+-- Setup global navigation keymaps (work during review mode only)
+local function setup_global_review_keymaps()
+  -- File navigation keymaps (global, but only work in review mode)
+  vim.keymap.set("n", M.config.next_file_key, function()
+    if vim.g.pr_review_number then
+      M.next_file()
+    else
+      vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(M.config.next_file_key, true, false, true), "n", false)
+    end
+  end, { desc = "Go to next file (PR review mode)" })
+
+  vim.keymap.set("n", M.config.prev_file_key, function()
+    if vim.g.pr_review_number then
+      M.prev_file()
+    else
+      vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(M.config.prev_file_key, true, false, true), "n", false)
+    end
+  end, { desc = "Go to previous file (PR review mode)" })
+
+  -- Toggle review buffer
+  vim.keymap.set("n", M.config.review_buffer.toggle_key, function()
+    if vim.g.pr_review_number then
+      M.toggle_review_buffer()
+    else
+      vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(M.config.review_buffer.toggle_key, true, false, true), "n", false)
+    end
+  end, { desc = "Toggle review buffer (PR review mode)" })
+end
+
 update_changes_float = function()
   if not vim.g.pr_review_number then
     close_float_wins()
@@ -344,10 +878,20 @@ update_changes_float = function()
     return
   end
 
-  -- Get quickfix info for general float
-  local qf_list = vim.fn.getqflist()
-  local qf_idx = vim.fn.getqflist({ idx = 0 }).idx
-  local total_files = #qf_list
+  -- Get file position from review files (use ordered list if available)
+  local file_path = get_relative_path(bufnr)
+  local file_list = #M._review_files_ordered > 0 and M._review_files_ordered or M._review_files
+  local file_idx = 1
+  local total_files = #file_list
+  local file_status = "M" -- default
+
+  for i, file in ipairs(file_list) do
+    if file.path == file_path then
+      file_idx = i
+      file_status = file.status
+      break
+    end
+  end
 
   -- Get cursor position for current hunk
   local cursor_line = vim.api.nvim_win_get_cursor(0)[1]
@@ -364,15 +908,14 @@ update_changes_float = function()
   local comments = M._buffer_comments[bufnr]
   local comment_count = comments and #comments or 0
   local stats = M._buffer_stats[bufnr]
-  local file_path = get_relative_path(bufnr)
   local is_viewed = M._viewed_files[file_path] or false
 
   -- FLOAT 1: General info (file x/total)
   local general_lines = {}
   if M.config.show_icons then
-    table.insert(general_lines, string.format(" 📁 File %d/%d ", qf_idx, total_files))
+    table.insert(general_lines, string.format(" 📁 File %d/%d ", file_idx, total_files))
   else
-    table.insert(general_lines, string.format(" File %d/%d ", qf_idx, total_files))
+    table.insert(general_lines, string.format(" File %d/%d ", file_idx, total_files))
   end
 
   -- FLOAT 2: Buffer info (viewed, hunks, stats, comments)
@@ -451,13 +994,17 @@ update_changes_float = function()
   end
 
   -- Create the 3 floats stacked vertically
-  M._float_win_general = create_or_update_float(M._float_win_general, general_lines, 0, "Normal:DiagnosticInfo,FloatBorder:DiagnosticInfo")
+  -- Use red border for deleted files
+  local border_hl = file_status == "D" and "Normal:DiagnosticError,FloatBorder:DiagnosticError" or "Normal:DiagnosticInfo,FloatBorder:DiagnosticInfo"
+  M._float_win_general = create_or_update_float(M._float_win_general, general_lines, 0, border_hl)
 
   local general_height = #general_lines + 2 -- +2 for border
-  M._float_win_buffer = create_or_update_float(M._float_win_buffer, buffer_lines, general_height, "Normal:DiagnosticHint,FloatBorder:DiagnosticHint")
+  local buffer_hl = file_status == "D" and "Normal:DiagnosticError,FloatBorder:DiagnosticError" or "Normal:DiagnosticHint,FloatBorder:DiagnosticHint"
+  M._float_win_buffer = create_or_update_float(M._float_win_buffer, buffer_lines, general_height, buffer_hl)
 
   local buffer_height = #buffer_lines + 2
-  M._float_win_keymaps = create_or_update_float(M._float_win_keymaps, keymap_lines, general_height + buffer_height, "Normal:DiagnosticWarn,FloatBorder:DiagnosticWarn")
+  local keymap_hl = file_status == "D" and "Normal:DiagnosticError,FloatBorder:DiagnosticError" or "Normal:DiagnosticWarn,FloatBorder:DiagnosticWarn"
+  M._float_win_keymaps = create_or_update_float(M._float_win_keymaps, keymap_lines, general_height + buffer_height, keymap_hl)
 end
 
 function M.mark_file_as_viewed_and_next()
@@ -477,14 +1024,11 @@ function M.mark_file_as_viewed_and_next()
   -- Update the float to show new status
   update_changes_float()
 
-  -- Go to next file in quickfix
-  local ok, err = pcall(vim.cmd, "cnext")
-  if not ok then
-    -- If we're at the last file, notify
-    if err:match("E553") then
-      vim.notify("Already at the last file", vim.log.levels.INFO)
-    end
-  end
+  -- Update review buffer
+  M.refresh_review_buffer()
+
+  -- Go to next file
+  M.next_file()
 end
 
 function M.next_hunk()
@@ -507,12 +1051,14 @@ function M.next_hunk()
   for _, hunk in ipairs(hunks) do
     if hunk.start_line > current_line then
       vim.api.nvim_win_set_cursor(0, { hunk.start_line, 0 })
+      vim.cmd("normal! zz")
       return
     end
   end
 
   -- If no hunk found after cursor, wrap to first hunk
   vim.api.nvim_win_set_cursor(0, { hunks[1].start_line, 0 })
+  vim.cmd("normal! zz")
 end
 
 function M.prev_hunk()
@@ -536,34 +1082,138 @@ function M.prev_hunk()
     local hunk = hunks[i]
     if hunk.start_line < current_line then
       vim.api.nvim_win_set_cursor(0, { hunk.start_line, 0 })
+      vim.cmd("normal! zz")
       return
     end
   end
 
   -- If no hunk found before cursor, wrap to last hunk
   vim.api.nvim_win_set_cursor(0, { hunks[#hunks].start_line, 0 })
+  vim.cmd("normal! zz")
+end
+
+-- Helper to open a file (including deleted files)
+local function open_file_safe(file)
+  -- Check if we're in the review buffer - if so, move to another window first
+  local current_buf = vim.api.nvim_get_current_buf()
+  if current_buf == M._review_buffer then
+    -- Find a non-review window to use
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+      local buf = vim.api.nvim_win_get_buf(win)
+      if buf ~= M._review_buffer and vim.api.nvim_win_is_valid(win) then
+        vim.api.nvim_set_current_win(win)
+        break
+      end
+    end
+
+    -- If we're still in review buffer, create a new split
+    if vim.api.nvim_get_current_buf() == M._review_buffer then
+      vim.cmd("wincmd l") -- Try to go right
+      if vim.api.nvim_get_current_buf() == M._review_buffer then
+        -- Still in review buffer, create vertical split
+        vim.cmd("vsplit")
+      end
+    end
+  end
+
+  if file.status == "D" then
+    -- Open deleted file from HEAD
+    local cmd = string.format("git show HEAD:%s", vim.fn.shellescape(file.path))
+    vim.fn.jobstart(cmd, {
+      stdout_buffered = true,
+      on_stdout = function(_, data)
+        vim.schedule(function()
+          if not data or #data == 0 then
+            vim.notify("Could not load deleted file content", vim.log.levels.ERROR)
+            return
+          end
+
+          -- Create scratch buffer with old content
+          local buf = vim.api.nvim_create_buf(false, true)
+          vim.api.nvim_buf_set_lines(buf, 0, -1, false, data)
+          vim.bo[buf].filetype = vim.filetype.match({ filename = file.path }) or ""
+          vim.bo[buf].buftype = "nofile"
+          vim.bo[buf].modifiable = false
+          vim.api.nvim_buf_set_name(buf, file.path .. " [DELETED]")
+
+          vim.api.nvim_set_current_buf(buf)
+        end)
+      end,
+    })
+  else
+    -- Open normal file
+    vim.cmd("edit " .. vim.fn.fnameescape(vim.fn.getcwd() .. "/" .. file.path))
+  end
 end
 
 function M.next_file()
-  if not vim.g.pr_review_number then
+  -- Use ordered list from ReviewBuffer
+  local file_list = #M._review_files_ordered > 0 and M._review_files_ordered or M._review_files
+
+  if not vim.g.pr_review_number or #file_list == 0 then
     return
   end
 
-  local ok, err = pcall(vim.cmd, "cnext")
-  if not ok and err:match("E553") then
-    vim.notify("Already at the last file", vim.log.levels.INFO)
+  local current_file = get_relative_path(vim.api.nvim_get_current_buf())
+  local current_idx = nil
+
+  for i, file in ipairs(file_list) do
+    if file.path == current_file then
+      current_idx = i
+      break
+    end
   end
+
+  if not current_idx then
+    -- Open first file
+    if file_list[1] then
+      open_file_safe(file_list[1])
+    end
+    return
+  end
+
+  if current_idx >= #file_list then
+    vim.notify("Already at the last file", vim.log.levels.INFO)
+    return
+  end
+
+  local next_file = file_list[current_idx + 1]
+  open_file_safe(next_file)
 end
 
 function M.prev_file()
-  if not vim.g.pr_review_number then
+  -- Use ordered list from ReviewBuffer
+  local file_list = #M._review_files_ordered > 0 and M._review_files_ordered or M._review_files
+
+  if not vim.g.pr_review_number or #file_list == 0 then
     return
   end
 
-  local ok, err = pcall(vim.cmd, "cprev")
-  if not ok and err:match("E553") then
-    vim.notify("Already at the first file", vim.log.levels.INFO)
+  local current_file = get_relative_path(vim.api.nvim_get_current_buf())
+  local current_idx = nil
+
+  for i, file in ipairs(file_list) do
+    if file.path == current_file then
+      current_idx = i
+      break
+    end
   end
+
+  if not current_idx then
+    -- Open first file
+    if file_list[1] then
+      open_file_safe(file_list[1])
+    end
+    return
+  end
+
+  if current_idx <= 1 then
+    vim.notify("Already at the first file", vim.log.levels.INFO)
+    return
+  end
+
+  local prev_file = file_list[current_idx - 1]
+  open_file_safe(prev_file)
 end
 
 local function load_changes_for_buffer(bufnr)
@@ -575,7 +1225,16 @@ local function load_changes_for_buffer(bufnr)
 
   local file_path = get_relative_path(bufnr)
 
-  get_changed_lines_for_file(file_path, function(lines, hunks)
+  -- Find status from review files
+  local status = "M" -- default to modified
+  for _, file in ipairs(M._review_files) do
+    if file.path == file_path then
+      status = file.status
+      break
+    end
+  end
+
+  get_changed_lines_for_file(file_path, status, function(lines, hunks)
     if lines and #lines > 0 then
       M._buffer_changes[bufnr] = lines
       M._buffer_hunks[bufnr] = hunks
@@ -595,8 +1254,6 @@ local function load_changes_for_buffer(bufnr)
       if not M._buffer_keymaps_saved[bufnr] then
         vim.keymap.set("n", M.config.next_hunk_key, M.next_hunk, { buffer = bufnr, desc = "Jump to next hunk" })
         vim.keymap.set("n", M.config.prev_hunk_key, M.prev_hunk, { buffer = bufnr, desc = "Jump to previous hunk" })
-        vim.keymap.set("n", M.config.next_file_key, M.next_file, { buffer = bufnr, desc = "Go to next file" })
-        vim.keymap.set("n", M.config.prev_file_key, M.prev_file, { buffer = bufnr, desc = "Go to previous file" })
         vim.keymap.set("n", M.config.mark_as_viewed_key, M.mark_file_as_viewed_and_next, { buffer = bufnr, desc = "Mark as viewed and next" })
         M._buffer_keymaps_saved[bufnr] = true
       end
@@ -1125,24 +1782,12 @@ function M.load_last_session()
   vim.g.pr_review_modified_files = session_data.modified_files
   M._viewed_files = session_data.viewed_files or {}
 
-  -- Populate quickfix with modified files
-  if session_data.modified_files and #session_data.modified_files > 0 then
-    local qf_list = {}
-    for _, file in ipairs(session_data.modified_files) do
-      if file.status ~= "D" then
-        table.insert(qf_list, {
-          filename = file.path,
-          lnum = 1,
-          text = file.status,
-        })
-      end
+  -- Open review buffer and first file
+  M.open_review_buffer(function()
+    if M._review_files[1] then
+      vim.cmd("edit " .. vim.fn.fnameescape(vim.fn.getcwd() .. "/" .. M._review_files[1].path))
     end
-    if #qf_list > 0 then
-      vim.fn.setqflist(qf_list)
-      vim.cmd("copen")
-      vim.cmd("cfirst")
-    end
-  end
+  end)
 
   vim.notify("✅ Session restored for PR #" .. session_data.pr_number, vim.log.levels.INFO)
 end
@@ -1394,23 +2039,12 @@ function M._start_review_for_pr(pr)
             -- Save initial session
             save_session()
 
-            if M.config.open_files_on_review then
-              local qf_list = {}
-              for _, file in ipairs(files) do
-                if file.status ~= "D" then
-                  table.insert(qf_list, {
-                    filename = file.path,
-                    lnum = file.line or 1,
-                    text = file.status,
-                  })
-                end
+            -- Open review buffer and first file
+            M.open_review_buffer(function()
+              if M.config.open_files_on_review and M._review_files[1] then
+                vim.cmd("edit " .. vim.fn.fnameescape(vim.fn.getcwd() .. "/" .. M._review_files[1].path))
               end
-              if #qf_list > 0 then
-                vim.fn.setqflist(qf_list)
-                vim.cmd("copen")
-                vim.cmd("cfirst")
-              end
-            end
+            end)
           end
         end)
       end)
@@ -1477,6 +2111,13 @@ function M.setup(opts)
     M.load_last_session()
   end, { desc = "Load last PR review session" })
 
+  vim.api.nvim_create_user_command("PRReviewBuffer", function()
+    M.open_review_buffer()
+  end, { desc = "Open PR review buffer" })
+
+  -- Setup global navigation keymaps
+  setup_global_review_keymaps()
+
   local augroup = vim.api.nvim_create_augroup("PRReviewComments", { clear = true })
   vim.api.nvim_create_autocmd("BufEnter", {
     group = augroup,
@@ -1486,6 +2127,9 @@ function M.setup(opts)
         load_changes_for_buffer(args.buf)
         load_inline_diff_for_buffer(args.buf)
 
+        -- Update review buffer to highlight current file
+        M.refresh_review_buffer()
+
         -- Jump to first change if we haven't already for this buffer
         -- Note: keymaps are now set in load_changes_for_buffer callback, only for files with changes
         if not M._buffer_jumped[args.buf] then
@@ -1493,6 +2137,7 @@ function M.setup(opts)
             local hunks = M._buffer_hunks[args.buf]
             if hunks and #hunks > 0 and vim.api.nvim_get_current_buf() == args.buf then
               vim.api.nvim_win_set_cursor(0, { hunks[1].start_line, 0 })
+              vim.cmd("normal! zz")
               M._buffer_jumped[args.buf] = true
             end
           end, 100)
@@ -1611,23 +2256,12 @@ function M.review_pr()
               -- Save initial session
               save_session()
 
-              if M.config.open_files_on_review then
-                local qf_list = {}
-                for _, file in ipairs(files) do
-                  if file.status ~= "D" then
-                    table.insert(qf_list, {
-                      filename = file.path,
-                      lnum = file.line or 1,
-                      text = file.status,
-                    })
-                  end
+              -- Open review buffer and first file
+              M.open_review_buffer(function()
+                if M.config.open_files_on_review and M._review_files[1] then
+                  vim.cmd("edit " .. vim.fn.fnameescape(vim.fn.getcwd() .. "/" .. M._review_files[1].path))
                 end
-                if #qf_list > 0 then
-                  vim.fn.setqflist(qf_list)
-                  vim.cmd("copen")
-                  vim.cmd("cfirst")
-                end
-              end
+              end)
             end
           end)
         end)
@@ -1657,6 +2291,14 @@ function M.cleanup_review_branch()
       M._viewed_files = {}
       M._buffer_jumped = {}
       M._buffer_keymaps_saved = {}
+      M._review_files = {}
+      M._review_files_ordered = {}
+      M._review_filter = "all"
+      if M._review_window and vim.api.nvim_win_is_valid(M._review_window) then
+        vim.api.nvim_win_close(M._review_window, true)
+      end
+      M._review_window = nil
+      M._review_buffer = nil
       close_float_wins()
 
       for _, buf in ipairs(vim.api.nvim_list_bufs()) do
@@ -1667,14 +2309,10 @@ function M.cleanup_review_branch()
           -- Delete buffer-local keymaps
           pcall(vim.keymap.del, "n", M.config.next_hunk_key, { buffer = buf })
           pcall(vim.keymap.del, "n", M.config.prev_hunk_key, { buffer = buf })
-          pcall(vim.keymap.del, "n", M.config.next_file_key, { buffer = buf })
-          pcall(vim.keymap.del, "n", M.config.prev_file_key, { buffer = buf })
           pcall(vim.keymap.del, "n", M.config.mark_as_viewed_key, { buffer = buf })
         end
       end
 
-      vim.fn.setqflist({})
-      vim.cmd("cclose")
       vim.notify("Cleaned up review branch, back on: " .. target, vim.log.levels.INFO)
     else
       vim.notify("Error cleaning up: " .. (err or "unknown"), vim.log.levels.ERROR)
