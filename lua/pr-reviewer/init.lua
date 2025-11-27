@@ -631,9 +631,9 @@ local function render_review_buffer()
   end
 
   -- Set lines
-  vim.api.nvim_buf_set_option(M._review_buffer, "modifiable", true)
+  vim.bo[M._review_buffer].modifiable = true
   vim.api.nvim_buf_set_lines(M._review_buffer, 0, -1, false, lines)
-  vim.api.nvim_buf_set_option(M._review_buffer, "modifiable", false)
+  vim.bo[M._review_buffer].modifiable = false
 
   -- Apply highlights
   local ns = vim.api.nvim_create_namespace("pr_review_buffer")
@@ -652,12 +652,85 @@ local function render_review_buffer()
   vim.b[M._review_buffer].pr_file_map = file_map
 end
 
+-- Helper to open a file (including deleted files)
+local function open_file_safe(file, split_cmd)
+  -- Check if we're in the review buffer - if so, move to another window first
+  local current_buf = vim.api.nvim_get_current_buf()
+  if current_buf == M._review_buffer then
+    -- Find a non-review window to use
+    local found_window = false
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+      local buf = vim.api.nvim_win_get_buf(win)
+      if buf ~= M._review_buffer and vim.api.nvim_win_is_valid(win) then
+        vim.api.nvim_set_current_win(win)
+        found_window = true
+        break
+      end
+    end
+
+    -- If we didn't find another window, create a new split to the right
+    if not found_window then
+      -- Make sure we're in the review buffer window
+      for _, win in ipairs(vim.api.nvim_list_wins()) do
+        if vim.api.nvim_win_get_buf(win) == M._review_buffer then
+          vim.api.nvim_set_current_win(win)
+          break
+        end
+      end
+      -- Create a new window to the right with an empty buffer
+      vim.cmd("rightbelow vnew")
+    elseif split_cmd then
+      -- Create split in the found window
+      if split_cmd == "split" then
+        vim.cmd("split")
+      elseif split_cmd == "vsplit" then
+        vim.cmd("vsplit")
+      end
+    end
+  elseif split_cmd then
+    -- Not in review buffer, just create the split
+    if split_cmd == "split" then
+      vim.cmd("split")
+    elseif split_cmd == "vsplit" then
+      vim.cmd("vsplit")
+    end
+  end
+
+  if file.status == "D" then
+    -- Open deleted file from HEAD
+    local cmd = string.format("git show HEAD:%s", vim.fn.shellescape(file.path))
+    vim.fn.jobstart(cmd, {
+      stdout_buffered = true,
+      on_stdout = function(_, data)
+        vim.schedule(function()
+          if not data or #data == 0 then
+            vim.notify("Could not load deleted file content", vim.log.levels.ERROR)
+            return
+          end
+
+          -- Create scratch buffer with old content
+          local buf = vim.api.nvim_create_buf(false, true)
+          vim.api.nvim_buf_set_lines(buf, 0, -1, false, data)
+          vim.bo[buf].filetype = vim.filetype.match({ filename = file.path }) or ""
+          vim.bo[buf].buftype = "nofile"
+          vim.bo[buf].modifiable = false
+          vim.api.nvim_buf_set_name(buf, file.path .. " [DELETED]")
+
+          vim.api.nvim_set_current_buf(buf)
+        end)
+      end,
+    })
+  else
+    -- Open normal file
+    vim.cmd("edit " .. vim.fn.fnameescape(vim.fn.getcwd() .. "/" .. file.path))
+  end
+end
+
 -- Open file from review buffer (handles deleted files)
 local function open_file_from_review(split_type)
   local bufnr = vim.api.nvim_get_current_buf()
   local file_map = vim.b[bufnr].pr_file_map
   if not file_map or type(file_map) ~= "table" then
-    -- Silently return for header lines
     return
   end
 
@@ -665,19 +738,11 @@ local function open_file_from_review(split_type)
   local file = file_map[line]
 
   if not file or type(file) ~= "table" or not file.path then
-    -- Silently return for header/separator lines
     return
   end
 
-  -- Handle split commands
-  if split_type == "split" then
-    vim.cmd("split")
-  elseif split_type == "vsplit" then
-    vim.cmd("vsplit")
-  end
-
-  -- Use the safe open function
-  open_file_safe(file)
+  -- Use the safe open function with split command
+  open_file_safe(file, split_type)
 end
 
 -- Toggle filter
@@ -689,20 +754,34 @@ end
 -- Setup keymaps for review buffer
 local function setup_review_buffer_keymaps(bufnr)
   local cfg = M.config.review_buffer
-  local opts = { buffer = bufnr, silent = true }
 
-  -- Open file
-  vim.keymap.set("n", "<CR>", function() open_file_from_review(nil) end, opts)
-  vim.keymap.set("n", cfg.open_split_key, function() open_file_from_review("split") end, opts)
-  vim.keymap.set("n", cfg.open_vsplit_key, function() open_file_from_review("vsplit") end, opts)
+  -- Store the callback in a global table so it can be called
+  _G._pr_reviewer_open_file = function()
+    open_file_from_review(nil)
+  end
+
+  -- Open file - using nvim_buf_set_keymap for compatibility
+  vim.api.nvim_buf_set_keymap(bufnr, "n", "<CR>", [[<Cmd>lua _G._pr_reviewer_open_file()<CR>]], { noremap = true, silent = true, nowait = true })
+
+  vim.keymap.set("n", cfg.open_split_key, function()
+    open_file_from_review("split")
+  end, { buffer = bufnr, silent = true, noremap = true, nowait = true, desc = "Open file in split" })
+  vim.keymap.set("n", cfg.open_vsplit_key, function()
+    open_file_from_review("vsplit")
+  end, { buffer = bufnr, silent = true, noremap = true, nowait = true, desc = "Open file in vsplit" })
 
   -- Filters
-  vim.keymap.set("n", cfg.filter_all_key, function() set_review_filter("all") end, opts)
-  vim.keymap.set("n", cfg.filter_viewed_key, function() set_review_filter("viewed") end, opts)
-  vim.keymap.set("n", cfg.filter_not_viewed_key, function() set_review_filter("not_viewed") end, opts)
+  vim.keymap.set("n", cfg.filter_all_key, function() set_review_filter("all") end, { buffer = bufnr, silent = true, noremap = true, nowait = true, desc = "Filter: all files" })
+  vim.keymap.set("n", cfg.filter_viewed_key, function() set_review_filter("viewed") end, { buffer = bufnr, silent = true, noremap = true, nowait = true, desc = "Filter: viewed files" })
+  vim.keymap.set("n", cfg.filter_not_viewed_key, function() set_review_filter("not_viewed") end, { buffer = bufnr, silent = true, noremap = true, nowait = true, desc = "Filter: not viewed files" })
 
-  -- Mark as viewed (same key as in file buffers)
-  vim.keymap.set("n", M.config.mark_as_viewed_key, function()
+  -- Note: We DON'T register mark_as_viewed_key here because:
+  -- 1. In ReviewBuffer, <CR> should open files, not mark them as viewed
+  -- 2. mark_as_viewed is for file buffers, not the ReviewBuffer itself
+  -- 3. If user wants to mark as viewed from ReviewBuffer, they can use a different key (e.g., 'm')
+
+  -- Optional: Add a different key for marking files as viewed from ReviewBuffer
+  vim.keymap.set("n", "m", function()
     local buf = vim.api.nvim_get_current_buf()
     local file_map = vim.b[buf].pr_file_map
     if not file_map or type(file_map) ~= "table" then return end
@@ -718,7 +797,7 @@ local function setup_review_buffer_keymaps(bufnr)
       -- Move to next file
       vim.cmd("normal! j")
     end
-  end, opts)
+  end, { buffer = bufnr, silent = true, noremap = true, nowait = true, desc = "Mark file as viewed" })
 
   -- Close buffer
   vim.keymap.set("n", "q", function()
@@ -726,7 +805,7 @@ local function setup_review_buffer_keymaps(bufnr)
       vim.api.nvim_win_close(M._review_window, true)
     end
     M._review_window = nil
-  end, opts)
+  end, { buffer = bufnr, silent = true, noremap = true, nowait = true, desc = "Close review buffer" })
 end
 
 -- Open or refresh review buffer
@@ -762,16 +841,24 @@ function M.open_review_buffer(callback)
       vim.api.nvim_buf_set_name(M._review_buffer, "PR Review")
     end
 
-    vim.api.nvim_buf_set_option(M._review_buffer, "buftype", "nofile")
-    vim.api.nvim_buf_set_option(M._review_buffer, "bufhidden", "hide")
-    vim.api.nvim_buf_set_option(M._review_buffer, "swapfile", false)
-    vim.api.nvim_buf_set_option(M._review_buffer, "filetype", "pr-review")
+    vim.bo[M._review_buffer].buftype = "nofile"
+    vim.bo[M._review_buffer].bufhidden = "hide"
+    vim.bo[M._review_buffer].swapfile = false
+    -- Don't set filetype yet - it might trigger ftplugins that override keymaps
+    -- vim.bo[M._review_buffer].filetype = "pr-review"
 
     setup_review_buffer_keymaps(M._review_buffer)
+    vim.notify("Review buffer keymaps set up for buffer " .. M._review_buffer, vim.log.levels.INFO)
   end
 
   -- Render content
   render_review_buffer()
+
+  -- Re-apply keymaps after rendering (in case buffer was recreated)
+  setup_review_buffer_keymaps(M._review_buffer)
+
+  -- Set modifiable to false after everything is set up
+  vim.bo[M._review_buffer].modifiable = false
 
   -- Open window if not already open
   if not M._review_window or not vim.api.nvim_win_is_valid(M._review_window) then
@@ -1092,60 +1179,6 @@ function M.prev_hunk()
   vim.cmd("normal! zz")
 end
 
--- Helper to open a file (including deleted files)
-local function open_file_safe(file)
-  -- Check if we're in the review buffer - if so, move to another window first
-  local current_buf = vim.api.nvim_get_current_buf()
-  if current_buf == M._review_buffer then
-    -- Find a non-review window to use
-    for _, win in ipairs(vim.api.nvim_list_wins()) do
-      local buf = vim.api.nvim_win_get_buf(win)
-      if buf ~= M._review_buffer and vim.api.nvim_win_is_valid(win) then
-        vim.api.nvim_set_current_win(win)
-        break
-      end
-    end
-
-    -- If we're still in review buffer, create a new split
-    if vim.api.nvim_get_current_buf() == M._review_buffer then
-      vim.cmd("wincmd l") -- Try to go right
-      if vim.api.nvim_get_current_buf() == M._review_buffer then
-        -- Still in review buffer, create vertical split
-        vim.cmd("vsplit")
-      end
-    end
-  end
-
-  if file.status == "D" then
-    -- Open deleted file from HEAD
-    local cmd = string.format("git show HEAD:%s", vim.fn.shellescape(file.path))
-    vim.fn.jobstart(cmd, {
-      stdout_buffered = true,
-      on_stdout = function(_, data)
-        vim.schedule(function()
-          if not data or #data == 0 then
-            vim.notify("Could not load deleted file content", vim.log.levels.ERROR)
-            return
-          end
-
-          -- Create scratch buffer with old content
-          local buf = vim.api.nvim_create_buf(false, true)
-          vim.api.nvim_buf_set_lines(buf, 0, -1, false, data)
-          vim.bo[buf].filetype = vim.filetype.match({ filename = file.path }) or ""
-          vim.bo[buf].buftype = "nofile"
-          vim.bo[buf].modifiable = false
-          vim.api.nvim_buf_set_name(buf, file.path .. " [DELETED]")
-
-          vim.api.nvim_set_current_buf(buf)
-        end)
-      end,
-    })
-  else
-    -- Open normal file
-    vim.cmd("edit " .. vim.fn.fnameescape(vim.fn.getcwd() .. "/" .. file.path))
-  end
-end
-
 function M.next_file()
   -- Use ordered list from ReviewBuffer
   local file_list = #M._review_files_ordered > 0 and M._review_files_ordered or M._review_files
@@ -1167,7 +1200,7 @@ function M.next_file()
   if not current_idx then
     -- Open first file
     if file_list[1] then
-      open_file_safe(file_list[1])
+      open_file_safe(file_list[1], nil)
     end
     return
   end
@@ -1178,7 +1211,7 @@ function M.next_file()
   end
 
   local next_file = file_list[current_idx + 1]
-  open_file_safe(next_file)
+  open_file_safe(next_file, nil)
 end
 
 function M.prev_file()
@@ -1202,7 +1235,7 @@ function M.prev_file()
   if not current_idx then
     -- Open first file
     if file_list[1] then
-      open_file_safe(file_list[1])
+      open_file_safe(file_list[1], nil)
     end
     return
   end
@@ -1213,7 +1246,7 @@ function M.prev_file()
   end
 
   local prev_file = file_list[current_idx - 1]
-  open_file_safe(prev_file)
+  open_file_safe(prev_file, nil)
 end
 
 local function load_changes_for_buffer(bufnr)
