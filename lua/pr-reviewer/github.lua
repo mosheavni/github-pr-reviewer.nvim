@@ -4,7 +4,7 @@ M._comments_cache = {}
 M._viewed_prs = {}
 
 function M.list_open_prs()
-  local result = vim.fn.system("gh pr list --state open --json number,title,headRefName,baseRefName,author")
+  local result = vim.fn.system("gh pr list --state open --json number,title,headRefName,baseRefName,author,headRepository,headRepositoryOwner")
 
   if vim.v.shell_error ~= 0 then
     return nil, "Failed to fetch PRs. Make sure 'gh' CLI is installed and authenticated."
@@ -23,6 +23,7 @@ function M.list_open_prs()
       head_branch = pr.headRefName,
       base_branch = pr.baseRefName,
       author = pr.author and pr.author.login or "unknown",
+      head_repo_owner = pr.headRepositoryOwner and pr.headRepositoryOwner.login or nil,
     })
   end
 
@@ -30,7 +31,7 @@ function M.list_open_prs()
 end
 
 function M.list_review_requests(callback)
-  local cmd = "gh pr list --search 'is:open review-requested:@me' --json number,title,headRefName,baseRefName,author,updatedAt,additions,deletions"
+  local cmd = "gh pr list --search 'is:open review-requested:@me' --json number,title,headRefName,baseRefName,author,updatedAt,additions,deletions,headRepositoryOwner"
 
   vim.fn.jobstart(cmd, {
     stdout_buffered = true,
@@ -86,6 +87,7 @@ function M.list_review_requests(callback)
               additions = pr.additions or 0,
               deletions = pr.deletions or 0,
               viewed = is_viewed,
+              head_repo_owner = pr.headRepositoryOwner and pr.headRepositoryOwner.login or nil,
             })
 
             pending = pending - 1
@@ -211,7 +213,7 @@ end
 
 function M.get_pr_info(pr_number, callback)
   local cmd = string.format(
-    "gh pr view %d --json number,title,author,state,additions,deletions,changedFiles,reviews,comments,headRefName,baseRefName,createdAt,updatedAt,mergeable,reviewDecision",
+    "gh pr view %d --json number,title,body,author,state,additions,deletions,changedFiles,reviews,comments,headRefName,baseRefName,createdAt,updatedAt,mergeable,reviewDecision",
     pr_number
   )
 
@@ -272,6 +274,7 @@ function M.get_pr_info(pr_number, callback)
         callback({
           number = info.number,
           title = info.title,
+          body = info.body or "",
           author = info.author and info.author.login or "unknown",
           state = info.state,
           head_branch = info.headRefName,
@@ -580,6 +583,168 @@ function M.delete_comment(pr_number, comment_id, callback)
           callback(false, "Failed to delete comment")
         end
       end)
+    end,
+  })
+end
+
+-- Add a pending review comment (part of a review draft)
+function M.add_pending_review_comment(pr_number, path, line, body, callback)
+  local get_head_cmd = string.format("gh pr view %d --json headRefOid --jq '.headRefOid'", pr_number)
+
+  vim.fn.jobstart(get_head_cmd, {
+    stdout_buffered = true,
+    on_stdout = function(_, data)
+      if not data or not data[1] or data[1] == "" then
+        vim.schedule(function()
+          callback(false, "Failed to get PR head commit")
+        end)
+        return
+      end
+
+      local commit_id = data[1]:gsub("%s+", "")
+
+      -- First, get or create a pending review
+      local get_reviews_cmd = string.format(
+        "gh api repos/{owner}/{repo}/pulls/%d/reviews --jq '.[] | select(.state == \"PENDING\") | .id' | head -n 1",
+        pr_number
+      )
+
+      vim.fn.jobstart(get_reviews_cmd, {
+        stdout_buffered = true,
+        on_stdout = function(_, review_data)
+          local review_id = nil
+          if review_data and review_data[1] and review_data[1] ~= "" then
+            review_id = tonumber(review_data[1]:gsub("%s+", ""))
+          end
+
+          local function add_comment_to_review(rid)
+            local json_body = vim.fn.json_encode({
+              body = body,
+              path = path,
+              line = line,
+              side = "RIGHT",
+            })
+
+            local cmd = string.format(
+              "gh api repos/{owner}/{repo}/pulls/%d/reviews/%d/comments -X POST --input -",
+              pr_number,
+              rid
+            )
+
+            local stderr_output = {}
+            local job_id = vim.fn.jobstart(cmd, {
+              stderr_buffered = true,
+              on_stderr = function(_, err_data)
+                if err_data then
+                  stderr_output = err_data
+                end
+              end,
+              on_exit = function(_, code)
+                vim.schedule(function()
+                  if code == 0 then
+                    M._comments_cache[pr_number] = nil
+                    callback(true, nil)
+                  else
+                    local err_msg = table.concat(stderr_output, "\n")
+                    callback(false, "Failed to add pending comment: " .. err_msg)
+                  end
+                end)
+              end,
+            })
+
+            vim.fn.chansend(job_id, json_body)
+            vim.fn.chanclose(job_id, "stdin")
+          end
+
+          if review_id then
+            -- Use existing pending review
+            add_comment_to_review(review_id)
+          else
+            -- Create a new pending review
+            local create_review_body = vim.fn.json_encode({
+              commit_id = commit_id,
+              event = "PENDING",
+            })
+
+            local create_cmd = string.format(
+              "gh api repos/{owner}/{repo}/pulls/%d/reviews -X POST --input -",
+              pr_number
+            )
+
+            local create_job = vim.fn.jobstart(create_cmd, {
+              stdout_buffered = true,
+              on_stdout = function(_, create_data)
+                local json_str = table.concat(create_data, "")
+                local ok, review = pcall(vim.fn.json_decode, json_str)
+                if ok and review and review.id then
+                  add_comment_to_review(review.id)
+                else
+                  vim.schedule(function()
+                    callback(false, "Failed to create pending review")
+                  end)
+                end
+              end,
+            })
+
+            vim.fn.chansend(create_job, create_review_body)
+            vim.fn.chanclose(create_job, "stdin")
+          end
+        end,
+      })
+    end,
+  })
+end
+
+-- Get pending review comments
+function M.get_pending_review_comments(pr_number, callback)
+  local cmd = string.format(
+    "gh api repos/{owner}/{repo}/pulls/%d/reviews --jq '.[] | select(.state == \"PENDING\") | .id'",
+    pr_number
+  )
+
+  vim.fn.jobstart(cmd, {
+    stdout_buffered = true,
+    on_stdout = function(_, data)
+      if not data or not data[1] or data[1] == "" then
+        vim.schedule(function()
+          callback({}, nil)
+        end)
+        return
+      end
+
+      local cleaned_data = data[1]:gsub("%s+", "")
+      local review_id = tonumber(cleaned_data)
+      if not review_id then
+        vim.schedule(function()
+          callback({}, nil)
+        end)
+        return
+      end
+
+      -- Get comments for this pending review
+      local comments_cmd = string.format(
+        "gh api repos/{owner}/{repo}/pulls/%d/reviews/%d/comments",
+        pr_number,
+        review_id
+      )
+
+      vim.fn.jobstart(comments_cmd, {
+        stdout_buffered = true,
+        on_stdout = function(_, comments_data)
+          local json_str = table.concat(comments_data, "")
+          local ok, comments = pcall(vim.fn.json_decode, json_str)
+
+          if ok and comments then
+            vim.schedule(function()
+              callback(comments, nil)
+            end)
+          else
+            vim.schedule(function()
+              callback({}, nil)
+            end)
+          end
+        end,
+      })
     end,
   })
 end
