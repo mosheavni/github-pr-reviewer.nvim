@@ -23,7 +23,18 @@ function M.fetch_all(callback)
         if code == 0 then
           callback(true, nil)
         else
-          callback(false, "git fetch failed")
+          -- Silently try just fetching origin as fallback
+          vim.fn.jobstart("git fetch origin", {
+            on_exit = function(_, origin_code)
+              vim.schedule(function()
+                if origin_code == 0 then
+                  callback(true, nil)
+                else
+                  callback(false, "git fetch failed")
+                end
+              end)
+            end,
+          })
         end
       end)
     end,

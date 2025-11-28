@@ -2462,6 +2462,130 @@ function M.list_pending_comments()
   end)
 end
 
+function M.list_all_comments()
+  local pr_number = vim.g.pr_review_number
+  if not pr_number then
+    vim.notify("Not in review mode", vim.log.levels.WARN)
+    return
+  end
+
+  -- Collect all comments from all buffers (GitHub posted comments)
+  local all_comments = {}
+
+  -- Add GitHub comments from buffer cache
+  for bufnr, comments in pairs(M._buffer_comments) do
+    if vim.api.nvim_buf_is_valid(bufnr) then
+      local file_path = vim.api.nvim_buf_get_name(bufnr)
+      -- Make path relative to cwd
+      local cwd = vim.fn.getcwd()
+      if file_path:sub(1, #cwd) == cwd then
+        file_path = file_path:sub(#cwd + 2)
+      end
+
+      for _, comment in ipairs(comments) do
+        table.insert(all_comments, {
+          id = comment.id,
+          path = file_path,
+          line = comment.line,
+          user = comment.user,
+          body = comment.body,
+          created_at = comment.created_at,
+          is_local = false,
+          bufnr = bufnr,
+        })
+      end
+    end
+  end
+
+  -- Add local pending comments (but check for duplicates)
+  local pending_comments = get_local_pending_comments_for_pr(pr_number)
+  for _, pending in ipairs(pending_comments) do
+    -- Check if this comment already exists in GitHub comments
+    local is_duplicate = false
+    for _, posted in ipairs(all_comments) do
+      if posted.path == pending.path and
+         posted.line == pending.line and
+         posted.body == pending.body and
+         not posted.is_local then
+        is_duplicate = true
+        break
+      end
+    end
+
+    -- Only add if not a duplicate
+    if not is_duplicate then
+      table.insert(all_comments, {
+        id = pending.id,
+        path = pending.path,
+        line = pending.line,
+        user = "You (PENDING)",
+        body = pending.body,
+        created_at = pending.created_at,
+        is_local = true,
+        bufnr = nil,
+      })
+    end
+  end
+
+  if #all_comments == 0 then
+    vim.notify("No comments in this PR", vim.log.levels.INFO)
+    return
+  end
+
+  -- Sort by file path, then line number
+  table.sort(all_comments, function(a, b)
+    if a.path ~= b.path then
+      return a.path < b.path
+    end
+    return a.line < b.line
+  end)
+
+  -- Use the UI picker to select a comment
+  ui.select_all_comments(all_comments, M.config.picker, function(selected_comment)
+    if not selected_comment then
+      return
+    end
+
+    -- Navigate to the file and line
+    local file_path = selected_comment.path
+
+    -- Try to find buffer with this file
+    local found_buf = selected_comment.bufnr
+    if not found_buf or not vim.api.nvim_buf_is_valid(found_buf) then
+      for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+        if vim.api.nvim_buf_is_valid(buf) and vim.api.nvim_buf_get_name(buf):match(file_path .. "$") then
+          found_buf = buf
+          break
+        end
+      end
+    end
+
+    -- Open the file
+    if found_buf then
+      -- File is already open in a buffer, find or create a window for it
+      local wins = vim.fn.win_findbuf(found_buf)
+      if #wins > 0 then
+        vim.api.nvim_set_current_win(wins[1])
+      else
+        vim.cmd("buffer " .. found_buf)
+      end
+    else
+      -- Open the file
+      vim.cmd("edit " .. file_path)
+    end
+
+    -- Navigate to the line
+    vim.api.nvim_win_set_cursor(0, { selected_comment.line, 0 })
+
+    -- Show notification with comment info
+    local status = selected_comment.is_local and "PENDING" or "Posted"
+    vim.notify(
+      string.format("[%s] %s:%d - %s", status, file_path, selected_comment.line, selected_comment.user),
+      vim.log.levels.INFO
+    )
+  end)
+end
+
 function M.reply_to_comment()
   local pr_number = vim.g.pr_review_number
   if not pr_number then
@@ -3254,6 +3378,10 @@ function M.setup(opts)
     M.list_pending_comments()
   end, { desc = "List all pending comments and navigate to selected one" })
 
+  vim.api.nvim_create_user_command("PRListAllComments", function()
+    M.list_all_comments()
+  end, { desc = "List all comments (pending + posted) with preview" })
+
   vim.api.nvim_create_user_command("PRReply", function()
     M.reply_to_comment()
   end, { desc = "Reply to a comment on the current line" })
@@ -3595,6 +3723,7 @@ function M.show_review_menu()
       { title = "Comments", items = {
         { key = "l", desc = "Add Line Comment", cmd = function() M.add_review_comment() end },
         { key = "p", desc = "Add Pending Comment", cmd = function() M.add_pending_comment() end },
+        { key = "v", desc = "List All Comments", cmd = function() M.list_all_comments() end },
         { key = "r", desc = "Reply to Comment", cmd = function() M.reply_to_comment() end },
         { key = "d", desc = "Delete Comment", cmd = function() M.delete_my_comment() end },
       }},

@@ -1,0 +1,619 @@
+*pr-reviewer.txt*    GitHub Pull Request Reviewer for Neovim
+
+                           PR REVIEWER~
+
+Author:  Your Name
+License: MIT
+Repository: https://github.com/otavioschwanck/pr-reviewer.nvim
+
+==============================================================================
+CONTENTS                                            *pr-reviewer-contents*
+
+    1. Introduction ...................... |pr-reviewer-intro|
+    2. Requirements ...................... |pr-reviewer-requirements|
+    3. Installation ...................... |pr-reviewer-installation|
+    4. Quick Start ....................... |pr-reviewer-quickstart|
+    5. Commands .......................... |pr-reviewer-commands|
+    6. Configuration ..................... |pr-reviewer-config|
+    7. Workflows ......................... |pr-reviewer-workflows|
+    8. Keymaps ........................... |pr-reviewer-keymaps|
+    9. Integration ....................... |pr-reviewer-integration|
+   10. Troubleshooting ................... |pr-reviewer-troubleshooting|
+   11. License ........................... |pr-reviewer-license|
+
+==============================================================================
+1. INTRODUCTION                                        *pr-reviewer-intro*
+
+PR Reviewer is a powerful Neovim plugin for reviewing GitHub Pull Requests
+directly in your editor. Review PRs with the full power of your development
+environment - LSP, navigation, favorite files, and all your familiar tools.
+
+WHY THIS PLUGIN?~
+
+Traditional PR review tools force you into a limited web interface. This
+plugin brings PR reviews into your Neovim environment where you have:
+
+• Full LSP support - Jump to definitions, find references, see type info
+• Your favorite navigation tools - arrow.nvim, harpoon, telescope, etc.
+• See the full codebase - Not limited to just the changed lines
+• Efficient workflows - Built-in keybindings and smart change tracking
+• Comprehensive comment management - Add, edit, delete, reply with great UX
+• Pending comments - Draft comments locally and submit them all together
+
+Review faster, review better. Use the same environment where you write code
+to review it.
+
+==============================================================================
+2. REQUIREMENTS                                   *pr-reviewer-requirements*
+
+• Neovim >= 0.9.0
+• GitHub CLI (`gh`) installed and authenticated
+• Git
+• Optional: bat for syntax-highlighted previews in fzf-lua
+
+==============================================================================
+3. INSTALLATION                                   *pr-reviewer-installation*
+
+Using lazy.nvim: >lua
+    {
+      "otavioschwanck/pr-reviewer.nvim",
+      config = function()
+        require("pr-reviewer").setup({
+          -- options (see |pr-reviewer-config|)
+        })
+      end,
+    }
+<
+
+Using packer.nvim: >lua
+    use {
+      "otavioschwanck/pr-reviewer.nvim",
+      config = function()
+        require("pr-reviewer").setup()
+      end
+    }
+<
+
+After installation, run `:helptags ALL` to generate help tags.
+
+==============================================================================
+4. QUICK START                                      *pr-reviewer-quickstart*
+
+1. Make sure you have no uncommitted changes
+2. Run |:PRListReviewRequests| to see PRs requesting your review
+3. Select a PR to review
+4. Use |:PRReviewBuffer| to see all changed files
+5. Navigate with LSP (gd, gr, K) and your favorite tools
+6. Add pending comments with |:PRPendingComment|
+7. Approve with |:PRApprove| or request changes with |:PRRequestChanges|
+8. Clean up with |:PRReviewCleanup|
+
+==============================================================================
+5. COMMANDS                                          *pr-reviewer-commands*
+
+MAIN MENU~
+                                                     *:PR*
+:PR                     Show interactive menu with all available actions.
+                        Alias for |:PRReviewMenu|.
+
+                                                     *:PRReviewMenu*
+:PRReviewMenu           Show interactive menu with all available actions.
+                        The menu adapts based on whether you're in review
+                        mode or not.
+
+REVIEW WORKFLOW~
+                                                     *:PRReview*
+:PRReview               Select and start reviewing a PR from the list of
+                        open PRs. Creates a review branch and soft-merges
+                        the PR changes as unstaged modifications.
+
+                                                     *:PRListReviewRequests*
+:PRListReviewRequests   List PRs where you are requested as a reviewer.
+                        Shows viewed status and allows marking PRs as
+                        viewed without starting a review.
+
+                                                     *:PRReviewCleanup*
+:PRReviewCleanup        End the current review. Reverts all PR changes,
+                        deletes the review branch, returns to your
+                        original branch, and clears the session.
+
+                                                     *:PRInfo*
+:PRInfo                 Show PR information including stats, reviews,
+                        merge status, and CI checks.
+
+                                                     *:PROpen*
+:PROpen                 Open the current PR in your web browser.
+                        Only available in review mode.
+
+                                                     *:PRLoadLastSession*
+:PRLoadLastSession      Restore the last PR review session after
+                        restarting Neovim. Restores PR number, branch,
+                        modified files, viewed status, and pending
+                        comments.
+
+                                                     *:PRReviewBuffer*
+:PRReviewBuffer         Toggle the review buffer (interactive file
+                        browser). Shows all changed files with viewed
+                        status, additions/deletions, and navigation keys.
+
+COMMENTS~
+                                                     *:PRReviewComment*
+:PRReviewComment        Show comments at the cursor line in a popup
+                        window. Comments also appear automatically on
+                        CursorHold.
+
+                                                     *:PRLineComment*
+:PRLineComment          Add a review comment on the current line. The
+                        comment is submitted immediately to GitHub.
+
+                                                     *:PRPendingComment*
+:PRPendingComment       Add a pending comment on the current line. The
+                        comment is saved locally and will be submitted
+                        when you run |:PRApprove| or |:PRRequestChanges|.
+
+                                                     *:PRListPendingComments*
+:PRListPendingComments  List all pending comments and navigate to the
+                        selected one. Shows file path, line number, and
+                        comment preview.
+
+                                                     *:PRListAllComments*
+:PRListAllComments      List ALL comments (both pending and posted) with
+                        file preview. Includes author, file path, line
+                        number, and status. Telescope and fzf-lua show
+                        file previews with syntax highlighting.
+
+                                                     *:PRReply*
+:PRReply                Reply to a comment on the current line. Cannot
+                        reply to pending comments (must be submitted
+                        first).
+
+                                                     *:PREditComment*
+:PREditComment          Edit your comment on the current line. Works for
+                        both pending and posted comments. Shows the
+                        conversation thread for context.
+
+                                                     *:PRDeleteComment*
+:PRDeleteComment        Delete your comment on the current line. For
+                        pending comments, removes from local storage. For
+                        posted comments, deletes from GitHub.
+
+                                                     *:PRComment*
+:PRComment              Add a general comment to the PR (not tied to a
+                        specific line).
+
+REVIEW ACTIONS~
+                                                     *:PRApprove*
+:PRApprove              Approve the PR with an optional comment. If you
+                        have pending comments, they will be shown for
+                        confirmation and submitted together with your
+                        approval.
+
+                                                     *:PRRequestChanges*
+:PRRequestChanges       Request changes on the PR with a required reason.
+                        If you have pending comments, they will be shown
+                        for confirmation and submitted together with your
+                        review.
+
+==============================================================================
+6. CONFIGURATION                                       *pr-reviewer-config*
+
+Configure the plugin by calling the setup function: >lua
+
+    require("pr-reviewer").setup({
+      -- Prefix for review branches
+      branch_prefix = "reviewing_",
+
+      -- Picker: "native", "fzf-lua", or "telescope"
+      picker = "native",
+
+      -- Open modified files in quickfix after starting review
+      open_files_on_review = true,
+
+      -- Show PR comments as virtual text in buffers
+      show_comments = true,
+
+      -- Show icons/emojis in UI
+      show_icons = true,
+
+      -- Show inline diff in buffers
+      show_inline_diff = true,
+
+      -- Key to mark file as viewed and go to next file
+      mark_as_viewed_key = "<CR>",
+
+      -- Key to jump to next hunk
+      next_hunk_key = "<C-j>",
+
+      -- Key to jump to previous hunk
+      prev_hunk_key = "<C-k>",
+
+      -- Key to go to next file in quickfix
+      next_file_key = "<C-l>",
+
+      -- Key to go to previous file in quickfix
+      prev_file_key = "<C-h>",
+    })
+<
+
+OPTIONS~
+                                                     *pr-reviewer.branch_prefix*
+branch_prefix           (string, default: "reviewing_")
+                        Prefix for review branches. Review branches are
+                        named as: `{prefix}{head_branch}_to_{base_branch}`
+
+                                                     *pr-reviewer.picker*
+picker                  (string, default: "native")
+                        Picker to use for PR selection and other lists.
+                        Options: "native", "fzf-lua", "telescope"
+
+                                                     *pr-reviewer.open_files_on_review*
+open_files_on_review    (boolean, default: true)
+                        Open modified files in quickfix list after
+                        starting a review.
+
+                                                     *pr-reviewer.show_comments*
+show_comments           (boolean, default: true)
+                        Show PR comments as virtual text in buffers.
+
+                                                     *pr-reviewer.show_icons*
+show_icons              (boolean, default: true)
+                        Show icons/emojis in UI. Set to false for a
+                        text-only interface.
+
+                                                     *pr-reviewer.show_inline_diff*
+show_inline_diff        (boolean, default: true)
+                        Show inline diff in buffers. Removed lines appear
+                        as virtual text above changes.
+
+                                                     *pr-reviewer.mark_as_viewed_key*
+mark_as_viewed_key      (string, default: "<CR>")
+                        Key to mark file as viewed and jump to next file.
+                        Only works in review mode.
+
+                                                     *pr-reviewer.next_hunk_key*
+next_hunk_key           (string, default: "<C-j>")
+                        Key to jump to next hunk. Only works in review
+                        mode.
+
+                                                     *pr-reviewer.prev_hunk_key*
+prev_hunk_key           (string, default: "<C-k>")
+                        Key to jump to previous hunk. Only works in
+                        review mode.
+
+                                                     *pr-reviewer.next_file_key*
+next_file_key           (string, default: "<C-l>")
+                        Key to go to next file in quickfix. Only works
+                        in review mode.
+
+                                                     *pr-reviewer.prev_file_key*
+prev_file_key           (string, default: "<C-h>")
+                        Key to go to previous file in quickfix. Only
+                        works in review mode.
+
+==============================================================================
+7. WORKFLOWS                                       *pr-reviewer-workflows*
+
+BASIC REVIEW WORKFLOW~
+
+1. Start a review: >vim
+    :PRListReviewRequests
+<
+2. Select a PR from the list
+
+3. Open review buffer to see all files: >vim
+    :PRReviewBuffer
+<
+4. Navigate with LSP:
+   • gd - Go to definition
+   • gr - Find references
+   • K - Hover documentation
+
+5. Add pending comments as you review: >vim
+    :PRPendingComment
+<
+6. Mark file as viewed: Press <CR> (default)
+
+7. Approve or request changes: >vim
+    :PRApprove
+    " or
+    :PRRequestChanges
+<
+8. Clean up: >vim
+    :PRReviewCleanup
+<
+
+PENDING COMMENTS WORKFLOW~
+                                                     *pr-reviewer-pending-comments*
+
+The most efficient way to review is using pending comments:
+
+1. As you review, add pending comments with |:PRPendingComment|
+2. These are saved locally (not submitted to GitHub yet)
+3. Continue reviewing, adding more pending comments
+4. Use |:PRListPendingComments| to review all your draft comments
+5. When ready, run |:PRApprove| or |:PRRequestChanges|
+6. The plugin shows a preview of ALL pending comments
+7. Confirm to submit your review + all pending comments at once
+
+Benefits:
+• Draft your thoughts as you review without interrupting your flow
+• Review all your comments before submitting
+• Submit everything together as a cohesive review
+• Edit or delete pending comments before submission
+
+NAVIGATION~
+                                                     *pr-reviewer-navigation*
+
+Hunk Navigation (within a file):
+• <C-j> (default) - Jump to next hunk
+• <C-k> (default) - Jump to previous hunk
+
+File Navigation (between modified files):
+• <C-l> (default) - Go to next file in quickfix
+• <C-h> (default) - Go to previous file in quickfix
+• <CR> (default) - Mark file as viewed and jump to next file
+
+Quickfix List:
+• :cnext or ]q - Go to next modified file
+• :cprev or [q - Go to previous modified file
+
+All keybindings are configurable and only activate during PR review mode.
+
+REVIEW BUFFER~
+                                                     *pr-reviewer-review-buffer*
+
+The review buffer is an interactive file browser showing all changed files:
+
+• ✓ = File has been marked as viewed
+• ○ = File not yet viewed
+• Shows additions/deletions for each file
+• Press <CR> to open a file
+• Press v to toggle viewed status
+• Press q to close
+• Automatically refreshes as you mark files viewed
+
+CHANGE PROGRESS INDICATOR~
+                                                     *pr-reviewer-progress-indicator*
+
+When reviewing a file with changes, a floating indicator shows:
+
+• Viewed status - Shows if the file has been marked as viewed
+• Change progress - Current change position (e.g., "2/5 changes")
+• Stats - +additions ~modifications -deletions
+• Comments - Number of posted PR comments in this file
+• Pending - Number of pending comments you've drafted
+• Mark as viewed - Key to mark file as viewed
+
+SESSION PERSISTENCE~
+                                                     *pr-reviewer-session*
+
+The plugin automatically saves your review session state:
+
+• Auto-save: Session is saved when you start a review
+• Per-project: Each project directory gets its own session file
+• What's saved: PR number, previous branch, modified files, viewed
+  status, and pending comments
+• Auto-cleanup: Session file is deleted when you run |:PRReviewCleanup|
+
+Restore a session after restarting Neovim: >vim
+    :PRLoadLastSession
+<
+
+Session files are stored in:
+    ~/.local/share/nvim/pr-reviewer-sessions/
+
+==============================================================================
+8. KEYMAPS                                           *pr-reviewer-keymaps*
+
+RECOMMENDED KEYMAPS~
+
+Add these to your config for quick access: >lua
+
+    -- Quick menu access
+    vim.keymap.set("n", "<leader>p", ":PR<CR>",
+      { desc = "PR Review Menu" })
+
+    -- Review workflow
+    vim.keymap.set("n", "<leader>pr", ":PRReview<CR>",
+      { desc = "Start PR review" })
+    vim.keymap.set("n", "<leader>pl", ":PRListReviewRequests<CR>",
+      { desc = "List review requests" })
+    vim.keymap.set("n", "<leader>pc", ":PRReviewCleanup<CR>",
+      { desc = "Cleanup PR review" })
+    vim.keymap.set("n", "<leader>pi", ":PRInfo<CR>",
+      { desc = "Show PR info" })
+    vim.keymap.set("n", "<leader>po", ":PROpen<CR>",
+      { desc = "Open PR in browser" })
+    vim.keymap.set("n", "<leader>pb", ":PRReviewBuffer<CR>",
+      { desc = "Toggle review buffer" })
+
+    -- Comments
+    vim.keymap.set("n", "<leader>pC", ":PRLineComment<CR>",
+      { desc = "Add line comment" })
+    vim.keymap.set("n", "<leader>pP", ":PRPendingComment<CR>",
+      { desc = "Add pending comment" })
+    vim.keymap.set("n", "<leader>pv", ":PRListAllComments<CR>",
+      { desc = "List all comments" })
+    vim.keymap.set("n", "<leader>pp", ":PRListPendingComments<CR>",
+      { desc = "List pending comments" })
+    vim.keymap.set("n", "<leader>pR", ":PRReply<CR>",
+      { desc = "Reply to comment" })
+    vim.keymap.set("n", "<leader>pe", ":PREditComment<CR>",
+      { desc = "Edit my comment" })
+    vim.keymap.set("n", "<leader>pd", ":PRDeleteComment<CR>",
+      { desc = "Delete my comment" })
+
+    -- Review actions
+    vim.keymap.set("n", "<leader>pa", ":PRApprove<CR>",
+      { desc = "Approve PR" })
+    vim.keymap.set("n", "<leader>px", ":PRRequestChanges<CR>",
+      { desc = "Request changes" })
+<
+
+BUILT-IN KEYMAPS~
+
+These keymaps are automatically configured and only work during PR review
+mode (they won't interfere with normal usage):
+
+• <CR> (configurable) - Mark file as viewed and jump to next file
+• <C-j> (configurable) - Jump to next hunk
+• <C-k> (configurable) - Jump to previous hunk
+• <C-l> (configurable) - Go to next file in quickfix
+• <C-h> (configurable) - Go to previous file in quickfix
+
+==============================================================================
+9. INTEGRATION                                   *pr-reviewer-integration*
+
+ARROW.NVIM / HARPOON~
+                                                     *pr-reviewer-arrow*
+                                                     *pr-reviewer-harpoon*
+
+Mark files you want to return to during review: >lua
+
+    -- With arrow.nvim
+    require("arrow").setup()
+
+    -- With harpoon
+    require("harpoon").setup()
+<
+
+Both plugins work seamlessly during PR review, letting you mark important
+files and jump between them quickly.
+
+LSP~
+                                                     *pr-reviewer-lsp*
+
+Your LSP is fully functional during PR review:
+• gd - Go to definition
+• gr - Find references
+• K - Hover documentation
+• <leader>rn - Rename
+• All your LSP keybindings work normally
+
+This is a huge advantage over web-based PR review - you can explore the
+full codebase with full language intelligence.
+
+TELESCOPE / FZF-LUA~
+                                                     *pr-reviewer-telescope*
+                                                     *pr-reviewer-fzf-lua*
+
+Set your preferred picker in the config: >lua
+
+    require("pr-reviewer").setup({
+      picker = "telescope",  -- or "fzf-lua" or "native"
+    })
+<
+
+Telescope and fzf-lua provide enhanced comment browsing with file previews:
+• Telescope: Full file preview with syntax highlighting and highlighted
+  comment line
+• fzf-lua: File preview with bat/cat showing context around the comment
+
+GITSIGNS.NVIM~
+                                                     *pr-reviewer-gitsigns*
+
+gitsigns.nvim is optional - the plugin has built-in inline diff
+visualization. However, gitsigns can still be useful for:
+
+• Hunk navigation with ]h and [h
+• Interactive hunk staging/unstaging
+• Additional git blame and diff features
+
+To use gitsigns instead of built-in inline diff: >lua
+
+    require("pr-reviewer").setup({
+      show_inline_diff = false,
+    })
+
+    require("gitsigns").setup({
+      -- your gitsigns config
+    })
+<
+
+==============================================================================
+10. TROUBLESHOOTING                          *pr-reviewer-troubleshooting*
+
+CANNOT START REVIEW: YOU HAVE UNCOMMITTED CHANGES~
+
+Commit or stash your changes before starting a review: >bash
+
+    git stash
+    # or
+    git commit -am "WIP"
+<
+
+NOT ON A REVIEW BRANCH~
+
+You can only run |:PRReviewCleanup| when on a review branch (prefixed with
+`reviewing_` by default).
+
+COMMENTS NOT SHOWING~
+
+1. Make sure `show_comments = true` in your config
+2. Check that you're authenticated: >bash
+    gh auth status
+<
+3. Try |:PRReviewComment| to manually show comments at cursor
+
+PR ACTIONS FAILING~
+
+Ensure GitHub CLI is properly authenticated: >bash
+
+    gh auth status
+    gh auth login  # if not authenticated
+<
+
+GIT FETCH FAILED~
+
+If you see this error, you might have old fork remotes that are no longer
+accessible. Clean them up: >bash
+
+    git remote | grep "^fork-" | xargs -I {} git remote remove {}
+<
+
+The plugin has a fallback that tries `git fetch origin` if
+`git fetch --all` fails.
+
+PREVIEW NOT WORKING IN FZF-LUA~
+
+Install bat for syntax-highlighted previews: >bash
+
+    # macOS
+    brew install bat
+
+    # Ubuntu/Debian
+    apt install bat
+
+    # Arch
+    pacman -S bat
+<
+
+If `bat` is not available, the plugin falls back to `cat`.
+
+==============================================================================
+11. LICENSE                                          *pr-reviewer-license*
+
+MIT License
+
+Copyright (c) 2024 [Your Name]
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to
+deal in the Software without restriction, including without limitation the
+rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+sell copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+IN THE SOFTWARE.
+
+==============================================================================
+vim:tw=78:ts=8:ft=help:norl:
