@@ -11,6 +11,7 @@ M.config = {
   show_comments = true, -- show PR comments in buffers during review
   show_icons = true, -- show icons in UI elements
   show_inline_diff = true, -- show inline diff in buffers (old lines as virtual text)
+  debug = false, -- show debug messages
   mark_as_viewed_key = "<CR>", -- key to mark file as viewed and go to next file
   next_hunk_key = "<C-j>", -- key to jump to next hunk
   prev_hunk_key = "<C-k>", -- key to jump to previous hunk
@@ -36,6 +37,13 @@ M.config = {
 local ns_id = vim.api.nvim_create_namespace("pr_review_comments")
 local changes_ns_id = vim.api.nvim_create_namespace("pr_review_changes")
 local diff_ns_id = vim.api.nvim_create_namespace("pr_review_diff")
+
+-- Debug logging helper
+local function debug_log(msg)
+  if M.config.debug then
+    vim.notify(msg, vim.log.levels.INFO)
+  end
+end
 
 M._buffer_comments = {}
 M._buffer_changes = {}
@@ -130,7 +138,7 @@ local function get_local_pending_comments_for_pr(pr_number)
   return M._local_pending_comments[pr_number] or {}
 end
 
-local function add_local_pending_comment(pr_number, path, line, body, user)
+local function add_local_pending_comment(pr_number, path, line, body, user, start_line)
   if not M._local_pending_comments[pr_number] then
     M._local_pending_comments[pr_number] = {}
   end
@@ -145,6 +153,11 @@ local function add_local_pending_comment(pr_number, path, line, body, user)
     is_pending = true,
     is_local = true,
   }
+
+  -- Add start_line for multi-line suggestions
+  if start_line and start_line ~= line then
+    comment.start_line = start_line
+  end
 
   table.insert(M._local_pending_comments[pr_number], comment)
   return comment
@@ -937,7 +950,7 @@ function M.open_review_buffer(callback)
     -- vim.bo[M._review_buffer].filetype = "pr-review"
 
     setup_review_buffer_keymaps(M._review_buffer)
-    vim.notify("Review buffer keymaps set up for buffer " .. M._review_buffer, vim.log.levels.INFO)
+    debug_log("Review buffer keymaps set up for buffer " .. M._review_buffer)
   end
 
   -- Render content
@@ -1617,13 +1630,13 @@ function M.load_comments_for_buffer(bufnr, force_reload)
 
     -- Also get pending comments and merge them
     github.get_pending_review_comments(pr_number, function(pending_comments, pending_err)
-      vim.notify(string.format("Debug load: Got %d pending comments, err=%s", #(pending_comments or {}), pending_err or "nil"), vim.log.levels.INFO)
+      debug_log(string.format("Debug load: Got %d pending comments, err=%s", #(pending_comments or {}), pending_err or "nil"))
 
       if not pending_err and pending_comments then
         -- Filter pending comments for this file and mark them as pending
         local added_count = 0
         for _, pc in ipairs(pending_comments) do
-          vim.notify(string.format("Debug load: Pending comment path=%s, file_path=%s, line=%s", pc.path or "nil", file_path, tostring(pc.line)), vim.log.levels.INFO)
+          debug_log(string.format("Debug load: Pending comment path=%s, file_path=%s, line=%s", pc.path or "nil", file_path, tostring(pc.line)))
           if pc.path == file_path then
             pc.is_pending = true
             pc.body = pc.body .. " (pending)"
@@ -1631,12 +1644,12 @@ function M.load_comments_for_buffer(bufnr, force_reload)
             added_count = added_count + 1
           end
         end
-        vim.notify(string.format("Debug load: Added %d pending comments to buffer", added_count), vim.log.levels.INFO)
+        debug_log(string.format("Debug load: Added %d pending comments to buffer", added_count))
       end
 
       -- Also merge local pending comments
       local local_pending = get_local_pending_comments_for_file(pr_number, file_path)
-      vim.notify(string.format("Debug load: Got %d local pending comments for file", #local_pending), vim.log.levels.INFO)
+      debug_log(string.format("Debug load: Got %d local pending comments for file", #local_pending))
       for _, lpc in ipairs(local_pending) do
         -- Local pending comments already have is_pending and is_local set
         table.insert(comments, lpc)
@@ -1661,7 +1674,7 @@ function M.load_comments_for_buffer(bufnr, force_reload)
   end)
 end
 
-local function input_multiline(prompt, callback)
+local function input_multiline(prompt, callback, initial_text)
   local buf = vim.api.nvim_create_buf(false, true)
   local width = math.floor(vim.o.columns * 0.6)
   local height = math.floor(vim.o.lines * 0.4)
@@ -1680,6 +1693,14 @@ local function input_multiline(prompt, callback)
 
   vim.bo[buf].filetype = "markdown"
   vim.bo[buf].bufhidden = "wipe"
+
+  -- Set initial text if provided
+  if initial_text then
+    local lines = vim.split(initial_text, "\n")
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+    -- Move cursor to the end
+    vim.api.nvim_win_set_cursor(win, { #lines, #lines[#lines] })
+  end
 
   vim.keymap.set("n", "<Esc>", function()
     vim.api.nvim_win_close(win, true)
@@ -2288,6 +2309,102 @@ local function input_reply_with_context(target_comment, all_comments, callback)
   vim.cmd("startinsert")
 end
 
+function M.add_review_comment_with_selection()
+  if not M._visual_selection then
+    vim.notify("No visual selection captured", vim.log.levels.WARN)
+    return
+  end
+
+  local pr_number = vim.g.pr_review_number
+  if not pr_number then
+    vim.notify("Not in review mode", vim.log.levels.WARN)
+    return
+  end
+
+  local bufnr = vim.api.nvim_get_current_buf()
+  local start_line = M._visual_selection.start_line
+  local end_line = M._visual_selection.end_line
+  local file_path = get_relative_path(bufnr)
+  local selected_text = M._visual_selection.text
+
+  -- Format as GitHub suggested change
+  -- https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/reviewing-changes-in-pull-requests/commenting-on-a-pull-request#adding-line-comments-to-a-pull-request
+  local suggestion_text = "```suggestion\n" .. selected_text .. "\n```\n\n"
+
+  -- Clear the selection after use
+  local temp_selection = M._visual_selection
+  M._visual_selection = nil
+
+  -- Prompt for comment
+  input_multiline("Suggested change (edit the code above, line " .. temp_selection.start_line .. "-" .. temp_selection.end_line .. ")", function(body)
+    if not body then
+      return
+    end
+
+    vim.notify("Adding code suggestion...", vim.log.levels.INFO)
+    github.add_review_comment(pr_number, file_path, end_line, body, function(ok, err)
+      if ok then
+        vim.notify("✅ Code suggestion added", vim.log.levels.INFO)
+        M.load_comments_for_buffer(bufnr, true)
+      else
+        vim.notify("❌ Failed to add suggestion: " .. (err or "unknown"), vim.log.levels.ERROR)
+      end
+    end, start_line)
+  end, suggestion_text)
+end
+
+function M.add_pending_comment_with_selection()
+  if not M._visual_selection then
+    vim.notify("No visual selection captured", vim.log.levels.WARN)
+    return
+  end
+
+  local pr_number = vim.g.pr_review_number
+  if not pr_number then
+    vim.notify("Not in review mode", vim.log.levels.WARN)
+    return
+  end
+
+  local bufnr = vim.api.nvim_get_current_buf()
+  local start_line = M._visual_selection.start_line
+  local end_line = M._visual_selection.end_line
+  local file_path = get_relative_path(bufnr)
+  local selected_text = M._visual_selection.text
+
+  -- Format as GitHub suggested change
+  local suggestion_text = "```suggestion\n" .. selected_text .. "\n```\n\n"
+
+  -- Clear the selection after use
+  local temp_selection = M._visual_selection
+  M._visual_selection = nil
+
+  -- Prompt for comment
+  input_multiline("Pending suggested change (edit the code above, line " .. temp_selection.start_line .. "-" .. temp_selection.end_line .. ")", function(body)
+    if not body then
+      return
+    end
+
+    -- Get current user
+    github.get_current_user(function(user, err)
+      local username = user or "me"
+
+      -- Store the range info in the comment body for later use
+      local comment_with_range = body .. "\n<!-- PR_RANGE:" .. start_line .. "-" .. end_line .. " -->"
+
+      -- Add comment to local storage
+      add_local_pending_comment(pr_number, file_path, end_line, comment_with_range, username, start_line)
+
+      -- Save session to persist pending comments
+      save_session()
+
+      vim.notify("✅ Pending suggestion added locally (will be posted with approval/rejection)", vim.log.levels.INFO)
+
+      -- Reload comments to show the new pending comment
+      M.load_comments_for_buffer(bufnr, false)
+    end)
+  end, suggestion_text)
+end
+
 function M.add_review_comment()
   local pr_number = vim.g.pr_review_number
   if not pr_number then
@@ -2458,6 +2575,7 @@ function M.list_pending_comments()
 
     -- Navigate to the line
     vim.api.nvim_win_set_cursor(0, { selected_comment.line, 0 })
+    vim.cmd("normal! zz")
     vim.notify(string.format("Navigated to %s:%d", file_path, selected_comment.line), vim.log.levels.INFO)
   end)
 end
@@ -2576,6 +2694,7 @@ function M.list_all_comments()
 
     -- Navigate to the line
     vim.api.nvim_win_set_cursor(0, { selected_comment.line, 0 })
+    vim.cmd("normal! zz")
 
     -- Show notification with comment info
     local status = selected_comment.is_local and "PENDING" or "Posted"
@@ -2987,138 +3106,184 @@ function M.show_pr_info()
       return
     end
 
-    local review_status = info.review_decision or "PENDING"
-    local review_icon, approved_icon, changes_icon, comment_icon, mergeable_icon
-    local author_prefix, branch_prefix, files_prefix, add_prefix, del_prefix
+    -- Fetch CI checks in parallel
+    github.get_pr_checks(pr_number, function(checks, checks_err)
+      -- Continue even if checks fail
+      local ci_checks = checks or {}
 
-    if M.config.show_icons then
-      review_icon = "⏳"
-      if review_status == "APPROVED" then
-        review_icon = "✅"
-      elseif review_status == "CHANGES_REQUESTED" then
-        review_icon = "❌"
-      elseif review_status == "REVIEW_REQUIRED" then
-        review_icon = "👀"
+      local review_status = info.review_decision or "PENDING"
+      local review_icon, approved_icon, changes_icon, comment_icon, mergeable_icon
+      local author_prefix, branch_prefix, files_prefix, add_prefix, del_prefix
+      local check_pass_icon, check_fail_icon, check_pending_icon
+
+      if M.config.show_icons then
+        check_pass_icon = "✅"
+        check_fail_icon = "❌"
+        check_pending_icon = "🔄"
+        review_icon = "⏳"
+        if review_status == "APPROVED" then
+          review_icon = "✅"
+        elseif review_status == "CHANGES_REQUESTED" then
+          review_icon = "❌"
+        elseif review_status == "REVIEW_REQUIRED" then
+          review_icon = "👀"
+        end
+
+        mergeable_icon = "❓"
+        if info.mergeable == "MERGEABLE" then
+          mergeable_icon = "✅"
+        elseif info.mergeable == "CONFLICTING" then
+          mergeable_icon = "⚠️"
+        end
+
+        approved_icon = "✅"
+        changes_icon = "❌"
+        comment_icon = "💬"
+        author_prefix = "👤 Author:"
+        branch_prefix = "🌿"
+        files_prefix = "📁 Files changed:"
+        add_prefix = "➕ Additions:"
+        del_prefix = "➖ Deletions:"
+      else
+        check_pass_icon = "[PASS]"
+        check_fail_icon = "[FAIL]"
+        check_pending_icon = "[...]"
+        review_icon = "[PENDING]"
+        if review_status == "APPROVED" then
+          review_icon = "[APPROVED]"
+        elseif review_status == "CHANGES_REQUESTED" then
+          review_icon = "[CHANGES]"
+        elseif review_status == "REVIEW_REQUIRED" then
+          review_icon = "[REVIEW]"
+        end
+
+        mergeable_icon = "[?]"
+        if info.mergeable == "MERGEABLE" then
+          mergeable_icon = "[OK]"
+        elseif info.mergeable == "CONFLICTING" then
+          mergeable_icon = "[CONFLICT]"
+        end
+
+        approved_icon = "[+]"
+        changes_icon = "[-]"
+        comment_icon = ""
+        author_prefix = "Author:"
+        branch_prefix = ""
+        files_prefix = "Files changed:"
+        add_prefix = "Additions:"
+        del_prefix = "Deletions:"
       end
 
-      mergeable_icon = "❓"
-      if info.mergeable == "MERGEABLE" then
-        mergeable_icon = "✅"
-      elseif info.mergeable == "CONFLICTING" then
-        mergeable_icon = "⚠️"
+      local approved_by = ""
+      if info.reviewers and #info.reviewers.approved > 0 then
+        approved_by = " (" .. table.concat(info.reviewers.approved, ", ") .. ")"
       end
 
-      approved_icon = "✅"
-      changes_icon = "❌"
-      comment_icon = "💬"
-      author_prefix = "👤 Author:"
-      branch_prefix = "🌿"
-      files_prefix = "📁 Files changed:"
-      add_prefix = "➕ Additions:"
-      del_prefix = "➖ Deletions:"
-    else
-      review_icon = "[PENDING]"
-      if review_status == "APPROVED" then
-        review_icon = "[APPROVED]"
-      elseif review_status == "CHANGES_REQUESTED" then
-        review_icon = "[CHANGES]"
-      elseif review_status == "REVIEW_REQUIRED" then
-        review_icon = "[REVIEW]"
+      local changes_by = ""
+      if info.reviewers and #info.reviewers.changes_requested > 0 then
+        changes_by = " (" .. table.concat(info.reviewers.changes_requested, ", ") .. ")"
       end
 
-      mergeable_icon = "[?]"
-      if info.mergeable == "MERGEABLE" then
-        mergeable_icon = "[OK]"
-      elseif info.mergeable == "CONFLICTING" then
-        mergeable_icon = "[CONFLICT]"
+      local lines = {
+        string.format("# PR #%d", info.number),
+        "",
+        string.format("**%s**", info.title),
+        "",
+        string.format("%s %s", author_prefix, info.author),
+        string.format("%s %s → %s", branch_prefix, info.head_branch, info.base_branch),
+        "",
+      }
+
+      -- Add description if present
+      if info.body and info.body ~= "" then
+        table.insert(lines, "## Description")
+        table.insert(lines, "")
+        for body_line in info.body:gmatch("[^\r\n]+") do
+          table.insert(lines, body_line)
+        end
+        table.insert(lines, "")
       end
 
-      approved_icon = "[+]"
-      changes_icon = "[-]"
-      comment_icon = ""
-      author_prefix = "Author:"
-      branch_prefix = ""
-      files_prefix = "Files changed:"
-      add_prefix = "Additions:"
-      del_prefix = "Deletions:"
-    end
+      -- Add stats
+      vim.list_extend(lines, {
+        "## Stats",
+        string.format("%s %d", files_prefix, info.changed_files),
+        string.format("%s %d", add_prefix, info.additions),
+        string.format("%s %d", del_prefix, info.deletions),
+        "",
+        "## Reviews",
+        string.format("%s Status: %s", review_icon, review_status:gsub("_", " ")),
+        string.format("%s Approved: %d%s", approved_icon, info.reviews.approved, approved_by),
+        string.format("%s Changes requested: %d%s", changes_icon, info.reviews.changes_requested, changes_by),
+        string.format("%s Commented: %d", comment_icon, info.reviews.commented),
+        "",
+      })
 
-    local approved_by = ""
-    if info.reviewers and #info.reviewers.approved > 0 then
-      approved_by = " (" .. table.concat(info.reviewers.approved, ", ") .. ")"
-    end
+      -- Add CI checks
+      if #ci_checks > 0 then
+        table.insert(lines, "## CI Checks")
+        local passed = 0
+        local failed = 0
+        local pending = 0
 
-    local changes_by = ""
-    if info.reviewers and #info.reviewers.changes_requested > 0 then
-      changes_by = " (" .. table.concat(info.reviewers.changes_requested, ", ") .. ")"
-    end
+        for _, check in ipairs(ci_checks) do
+          local icon
+          local status = check.conclusion or check.state
 
-    local lines = {
-      string.format("# PR #%d", info.number),
-      "",
-      string.format("**%s**", info.title),
-      "",
-      string.format("%s %s", author_prefix, info.author),
-      string.format("%s %s → %s", branch_prefix, info.head_branch, info.base_branch),
-      "",
-    }
+          if status == "success" or status == "SUCCESS" then
+            icon = check_pass_icon
+            passed = passed + 1
+          elseif status == "failure" or status == "FAILURE" then
+            icon = check_fail_icon
+            failed = failed + 1
+          else
+            icon = check_pending_icon
+            pending = pending + 1
+          end
 
-    -- Add description if present
-    if info.body and info.body ~= "" then
-      table.insert(lines, "## Description")
-      table.insert(lines, "")
-      for body_line in info.body:gmatch("[^\r\n]+") do
-        table.insert(lines, body_line)
+          table.insert(lines, string.format("%s %s", icon, check.name))
+        end
+
+        table.insert(lines, "")
+        table.insert(lines, string.format("Total: %d passed, %d failed, %d pending", passed, failed, pending))
+        table.insert(lines, "")
       end
-      table.insert(lines, "")
-    end
 
-    -- Add stats
-    vim.list_extend(lines, {
-      "## Stats",
-      string.format("%s %d", files_prefix, info.changed_files),
-      string.format("%s %d", add_prefix, info.additions),
-      string.format("%s %d", del_prefix, info.deletions),
-      "",
-      "## Reviews",
-      string.format("%s Status: %s", review_icon, review_status:gsub("_", " ")),
-      string.format("%s Approved: %d%s", approved_icon, info.reviews.approved, approved_by),
-      string.format("%s Changes requested: %d%s", changes_icon, info.reviews.changes_requested, changes_by),
-      string.format("%s Commented: %d", comment_icon, info.reviews.commented),
-      "",
-      "## Status",
-      string.format("%s Mergeable: %s", mergeable_icon, info.mergeable or "UNKNOWN"),
-      string.format("%s Comments: %d", comment_icon, info.comments_count),
-    })
+      vim.list_extend(lines, {
+        "## Status",
+        string.format("%s Mergeable: %s", mergeable_icon, info.mergeable or "UNKNOWN"),
+        string.format("%s Comments: %d", comment_icon, info.comments_count),
+      })
 
-    local buf = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-    vim.bo[buf].filetype = "markdown"
-    vim.bo[buf].bufhidden = "wipe"
-    vim.bo[buf].modifiable = false
+      local buf = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+      vim.bo[buf].filetype = "markdown"
+      vim.bo[buf].bufhidden = "wipe"
+      vim.bo[buf].modifiable = false
 
-    local width = math.min(100, math.floor(vim.o.columns * 0.8))
-    local height = math.min(#lines, math.floor(vim.o.lines * 0.8))
-    local win = vim.api.nvim_open_win(buf, true, {
-      relative = "editor",
-      width = width,
-      height = height,
-      col = math.floor((vim.o.columns - width) / 2),
-      row = math.floor((vim.o.lines - height) / 2),
-      style = "minimal",
-      border = "rounded",
-      title = " PR Info ",
-      title_pos = "center",
-    })
+      local width = math.min(100, math.floor(vim.o.columns * 0.8))
+      local height = math.min(#lines, math.floor(vim.o.lines * 0.8))
+      local win = vim.api.nvim_open_win(buf, true, {
+        relative = "editor",
+        width = width,
+        height = height,
+        col = math.floor((vim.o.columns - width) / 2),
+        row = math.floor((vim.o.lines - height) / 2),
+        style = "minimal",
+        border = "rounded",
+        title = " PR Info ",
+        title_pos = "center",
+      })
 
-    vim.keymap.set("n", "q", function()
-      vim.api.nvim_win_close(win, true)
-    end, { buffer = buf })
+      vim.keymap.set("n", "q", function()
+        vim.api.nvim_win_close(win, true)
+      end, { buffer = buf })
 
-    vim.keymap.set("n", "<Esc>", function()
-      vim.api.nvim_win_close(win, true)
-    end, { buffer = buf })
-  end)
+      vim.keymap.set("n", "<Esc>", function()
+        vim.api.nvim_win_close(win, true)
+      end, { buffer = buf })
+    end) -- End of get_pr_checks callback
+  end) -- End of get_pr_info callback
 end
 
 function M.open_pr()
@@ -3242,14 +3407,14 @@ function M._start_review_for_pr(pr)
 
   -- For fork PRs, get the correct branch name using gh pr view
   if pr.head_repo_owner then
-    vim.notify(string.format("Debug: Detected fork PR, owner=%s, getting details...", pr.head_repo_owner), vim.log.levels.INFO)
+    debug_log(string.format("Debug: Detected fork PR, owner=%s, getting details...", pr.head_repo_owner))
     github.get_pr_details(pr.number, function(details, err)
       if err or not details then
         vim.notify("Error getting PR details: " .. (err or "unknown"), vim.log.levels.ERROR)
         return
       end
 
-      vim.notify(string.format("Debug: Got branch %s, was %s", details.head_branch, pr.head_branch), vim.log.levels.INFO)
+      debug_log(string.format("Debug: Got branch %s, was %s", details.head_branch, pr.head_branch))
 
       -- Update PR with correct branch from details
       pr.head_branch = details.head_branch
@@ -3258,7 +3423,7 @@ function M._start_review_for_pr(pr)
       M._do_start_review(pr)
     end)
   else
-    vim.notify("Debug: Not a fork PR, using branch as-is", vim.log.levels.INFO)
+    debug_log("Debug: Not a fork PR, using branch as-is")
     M._do_start_review(pr)
   end
 end
@@ -3285,10 +3450,10 @@ function M._do_start_review(pr)
         return
       end
 
-      vim.notify(string.format("Debug: About to merge - branch=%s, owner=%s, url=%s",
+      debug_log(string.format("Debug: About to merge - branch=%s, owner=%s, url=%s",
                                pr.head_branch or "nil",
                                pr.head_repo_owner or "nil",
-                               pr.head_repo_url or "nil"), vim.log.levels.INFO)
+                               pr.head_repo_url or "nil"))
       git.soft_merge(pr.head_branch, pr.head_repo_owner, pr.head_repo_url, function(merge_ok, merge_err, has_conflicts)
         if not merge_ok then
           vim.notify("Error during soft merge: " .. (merge_err or "unknown"), vim.log.levels.ERROR)
@@ -3401,6 +3566,56 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("PR", function()
     M.show_review_menu()
   end, { desc = "Show PR Reviewer command menu (alias for PRReviewMenu)" })
+
+  -- Visual mode suggestion command
+  vim.api.nvim_create_user_command("PRSuggestChange", function()
+    -- Get visual selection
+    local start_pos = vim.fn.getpos("'<")
+    local end_pos = vim.fn.getpos("'>")
+
+    if start_pos[2] == 0 or end_pos[2] == 0 then
+      vim.notify("No visual selection. Select code first with V or v", vim.log.levels.WARN)
+      return
+    end
+
+    local start_line = start_pos[2]
+    local end_line = end_pos[2]
+
+    -- Get the full lines
+    local lines = vim.api.nvim_buf_get_lines(0, start_line - 1, end_line, false)
+
+    if #lines == 0 then
+      vim.notify("No lines selected", vim.log.levels.WARN)
+      return
+    end
+
+    local visual_sel = {
+      text = table.concat(lines, "\n"),
+      full_lines = lines,
+      start_line = start_line,
+      end_line = end_line,
+    }
+
+    M._visual_selection = visual_sel
+
+    -- Ask which type
+    vim.ui.select(
+      { "Immediate (post now)", "Pending (post with review)" },
+      { prompt = "Suggest code change:" },
+      function(choice, idx)
+        if not choice then
+          M._visual_selection = nil
+          return
+        end
+
+        if idx == 1 then
+          M.add_review_comment_with_selection()
+        else
+          M.add_pending_comment_with_selection()
+        end
+      end
+    )
+  end, { desc = "Suggest code change from visual selection", range = true })
 
   vim.api.nvim_create_user_command("PRListReviewRequests", function()
     M.list_review_requests()
@@ -3526,24 +3741,24 @@ function M.review_pr()
 
       -- For fork PRs, get the correct branch name using gh pr view
       if pr.head_repo_owner then
-        vim.notify(string.format("Debug: Detected fork PR, owner=%s, getting details...", pr.head_repo_owner), vim.log.levels.INFO)
+        debug_log(string.format("Debug: Detected fork PR, owner=%s, getting details...", pr.head_repo_owner))
         github.get_pr_details(pr.number, function(details, err)
           if err or not details then
             vim.notify("Error getting PR details: " .. (err or "unknown"), vim.log.levels.ERROR)
             return
           end
 
-          vim.notify(string.format("Debug: Got branch %s, was %s", details.head_branch, pr.head_branch), vim.log.levels.INFO)
+          debug_log(string.format("Debug: Got branch %s, was %s", details.head_branch, pr.head_branch))
 
           -- Update PR with correct branch from details
           pr.head_branch = details.head_branch
           pr.head_label = details.head_label
 
-          vim.notify("Debug: About to call _do_review_pr_with_branch", vim.log.levels.INFO)
+          debug_log("Debug: About to call _do_review_pr_with_branch")
           M._do_review_pr_with_branch(pr)
         end)
       else
-        vim.notify("Debug: Not a fork PR, using branch as-is", vim.log.levels.INFO)
+        debug_log("Debug: Not a fork PR, using branch as-is")
         M._do_review_pr_with_branch(pr)
       end
     end)
@@ -3572,10 +3787,10 @@ function M._do_review_pr_with_branch(pr)
         return
       end
 
-      vim.notify(string.format("Debug: About to merge - branch=%s, owner=%s, url=%s",
+      debug_log(string.format("Debug: About to merge - branch=%s, owner=%s, url=%s",
                                pr.head_branch or "nil",
                                pr.head_repo_owner or "nil",
-                               pr.head_repo_url or "nil"), vim.log.levels.INFO)
+                               pr.head_repo_url or "nil"))
       git.soft_merge(pr.head_branch, pr.head_repo_owner, pr.head_repo_url, function(merge_ok, merge_err, has_conflicts)
         if not merge_ok then
           vim.notify("Error during soft merge: " .. (merge_err or "unknown"), vim.log.levels.ERROR)
@@ -3677,59 +3892,40 @@ end
 -- Menu buffer state
 M._menu_buffer = nil
 M._menu_window = nil
+M._visual_selection = nil -- Store visual selection for comments
 
-function M.show_review_menu()
-  -- Check if in review mode
-  local in_review_mode = vim.g.pr_review_number ~= nil
+-- Helper function to get visual selection
+local function get_visual_selection()
+  -- Use marks to get the last visual selection
+  local start_pos = vim.fn.getpos("'<")
+  local end_pos = vim.fn.getpos("'>")
 
-  -- Check if there's a saved session
-  local has_session = false
-  local session_file = get_session_file()
-  local file = io.open(session_file, "r")
-  if file then
-    file:close()
-    has_session = true
+  if start_pos[2] == 0 or end_pos[2] == 0 then
+    return nil
   end
 
-  -- Define menu sections based on mode
-  local sections = {}
+  local start_line = start_pos[2]
+  local end_line = end_pos[2]
+  local start_col = start_pos[3]
+  local end_col = end_pos[3]
 
-  if not in_review_mode then
-    -- Not in review mode - show PR selection options
-    sections = {
-      { title = "Pull Request", items = {
-        { key = "l", desc = "List Pull Requests", cmd = function() M.review_pr() end },
-        { key = "r", desc = "List Pull Requests with Assignee", cmd = function() M.list_review_requests() end },
-      }},
-    }
+  -- Get the full lines (for suggestion feature, we want complete lines)
+  local lines = vim.api.nvim_buf_get_lines(0, start_line - 1, end_line, false)
 
-    if has_session then
-      table.insert(sections[1].items, { key = "s", desc = "Load Last Session", cmd = function() M.load_last_session() end })
-    end
-  else
-    -- In review mode - show review actions
-    sections = {
-      { title = "Pull Request", items = {
-        { key = "i", desc = "PR Info", cmd = function() M.show_pr_info() end },
-        { key = "o", desc = "Open PR in Browser", cmd = function() M.open_pr() end },
-        { key = "c", desc = "Comment on PR", cmd = function() M.add_comment() end },
-        { key = "a", desc = "Approve PR", cmd = function() M.approve_pr() end },
-        { key = "x", desc = "Request Changes", cmd = function() M.request_changes() end },
-        { key = "e", desc = "Cleanup Review", cmd = function() M.cleanup_review_branch() end },
-      }},
-      { title = "General", items = {
-        { key = "b", desc = "Toggle Review Buffer", cmd = function() M.toggle_review_buffer() end },
-      }},
-      { title = "Comments", items = {
-        { key = "l", desc = "Add Line Comment", cmd = function() M.add_review_comment() end },
-        { key = "p", desc = "Add Pending Comment", cmd = function() M.add_pending_comment() end },
-        { key = "v", desc = "List All Comments", cmd = function() M.list_all_comments() end },
-        { key = "r", desc = "Reply to Comment", cmd = function() M.reply_to_comment() end },
-        { key = "d", desc = "Delete Comment", cmd = function() M.delete_my_comment() end },
-      }},
-    }
+  if #lines == 0 then
+    return nil
   end
 
+  return {
+    text = table.concat(lines, "\n"),
+    full_lines = lines,
+    start_line = start_line,
+    end_line = end_line,
+  }
+end
+
+-- Helper function to show menu window
+local function show_menu_window(sections)
   -- Create new buffer every time to refresh content
   local bufnr = vim.api.nvim_create_buf(false, true)
   vim.bo[bufnr].bufhidden = "wipe"
@@ -3818,6 +4014,61 @@ function M.show_review_menu()
       end, { buffer = bufnr, silent = true, nowait = true })
     end
   end
+end
+
+function M.show_review_menu()
+  -- Check if in review mode
+  local in_review_mode = vim.g.pr_review_number ~= nil
+
+  -- Check if there's a saved session
+  local has_session = false
+  local session_file = get_session_file()
+  local file = io.open(session_file, "r")
+  if file then
+    file:close()
+    has_session = true
+  end
+
+  -- Define menu sections based on mode
+  local sections = {}
+
+  if not in_review_mode then
+    -- Not in review mode - show PR selection options
+    sections = {
+      { title = "Pull Request", items = {
+        { key = "l", desc = "List Pull Requests", cmd = function() M.review_pr() end },
+        { key = "r", desc = "List Pull Requests with Assignee", cmd = function() M.list_review_requests() end },
+      }},
+    }
+
+    if has_session then
+      table.insert(sections[1].items, { key = "s", desc = "Load Last Session", cmd = function() M.load_last_session() end })
+    end
+  else
+    -- In review mode - show review actions
+    sections = {
+      { title = "Pull Request", items = {
+        { key = "i", desc = "PR Info", cmd = function() M.show_pr_info() end },
+        { key = "o", desc = "Open PR in Browser", cmd = function() M.open_pr() end },
+        { key = "c", desc = "Comment on PR", cmd = function() M.add_comment() end },
+        { key = "a", desc = "Approve PR", cmd = function() M.approve_pr() end },
+        { key = "x", desc = "Request Changes", cmd = function() M.request_changes() end },
+        { key = "e", desc = "Cleanup Review", cmd = function() M.cleanup_review_branch() end },
+      }},
+      { title = "General", items = {
+        { key = "b", desc = "Toggle Review Buffer", cmd = function() M.toggle_review_buffer() end },
+      }},
+      { title = "Comments", items = {
+        { key = "l", desc = "Add Line Comment", cmd = function() M.add_review_comment() end },
+        { key = "p", desc = "Add Pending Comment", cmd = function() M.add_pending_comment() end },
+        { key = "v", desc = "List All Comments", cmd = function() M.list_all_comments() end },
+        { key = "r", desc = "Reply to Comment", cmd = function() M.reply_to_comment() end },
+        { key = "d", desc = "Delete Comment", cmd = function() M.delete_my_comment() end },
+      }},
+    }
+  end
+
+  show_menu_window(sections)
 end
 
 return M

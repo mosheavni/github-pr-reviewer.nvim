@@ -3,6 +3,14 @@ local M = {}
 M._comments_cache = {}
 M._viewed_prs = {}
 
+-- Debug logging helper
+local function debug_log(msg)
+  local pr_reviewer = require("pr-reviewer")
+  if pr_reviewer.config.debug then
+    vim.notify(msg, vim.log.levels.INFO)
+  end
+end
+
 function M.list_open_prs()
   local result = vim.fn.system("gh pr list --state open --json number,title,headRefName,baseRefName,author,headRepository,headRepositoryOwner,isCrossRepository,labels,headRefOid")
 
@@ -24,13 +32,12 @@ function M.list_open_prs()
                       pr.headRefName
 
     -- Debug: print what we're getting
-    vim.notify(string.format("PR #%d: headRefName=%s, owner=%s, repo=%s, url=%s",
+    debug_log(string.format("PR #%d: headRefName=%s, owner=%s, repo=%s, url=%s",
                              pr.number,
                              pr.headRefName or "nil",
                              (pr.headRepositoryOwner and pr.headRepositoryOwner.login) or "nil",
                              pr.headRepository and pr.headRepository.name or "nil",
-                             pr.headRepository and pr.headRepository.url or "nil"),
-               vim.log.levels.INFO)
+                             pr.headRepository and pr.headRepository.url or "nil"))
 
     -- Check if it's a cross-repository PR (fork)
     local is_fork = pr.isCrossRepository or false
@@ -88,7 +95,7 @@ function M.get_pr_details(pr_number, callback)
                           (pr.headRepositoryOwner.login .. ":" .. pr.headRefName) or
                           pr.headRefName
 
-        vim.notify(string.format("Debug: PR #%d actual branch = %s", pr_number, head_branch), vim.log.levels.INFO)
+        debug_log(string.format("Debug: PR #%d actual branch = %s", pr_number, head_branch))
 
         callback({
           head_branch = head_branch,
@@ -398,6 +405,42 @@ function M.get_pr_info(pr_number, callback)
   })
 end
 
+function M.get_pr_checks(pr_number, callback)
+  local cmd = string.format("gh pr checks %d --json name,state,conclusion,detailsUrl", pr_number)
+
+  vim.fn.jobstart(cmd, {
+    stdout_buffered = true,
+    on_stdout = function(_, data)
+      if not data or not data[1] or data[1] == "" then
+        vim.schedule(function()
+          callback({}, nil) -- Return empty array if no checks
+        end)
+        return
+      end
+
+      local json_str = table.concat(data, "")
+      local ok, checks = pcall(vim.fn.json_decode, json_str)
+      if not ok or not checks then
+        vim.schedule(function()
+          callback({}, nil) -- Return empty array on parse error
+        end)
+        return
+      end
+
+      vim.schedule(function()
+        callback(checks, nil)
+      end)
+    end,
+    on_stderr = function(_, data)
+      if data and data[1] and data[1] ~= "" then
+        vim.schedule(function()
+          callback({}, table.concat(data, "\n"))
+        end)
+      end
+    end,
+  })
+end
+
 function M.fetch_pr_comments(pr_number, callback)
   if M._comments_cache[pr_number] then
     callback(M._comments_cache[pr_number], nil)
@@ -521,11 +564,19 @@ function M.submit_review_with_comments(pr_number, event, body, comments, callbac
       local api_comments = {}
       for _, comment in ipairs(comments) do
         if comment.line and type(comment.line) == "number" and comment.line > 0 then
-          table.insert(api_comments, {
+          local api_comment = {
             path = comment.path,
             line = comment.line,
             body = comment.body,
-          })
+          }
+
+          -- Add start_line for multi-line comments
+          if comment.start_line and comment.start_line ~= comment.line then
+            api_comment.start_line = comment.start_line
+            api_comment.start_side = "RIGHT"
+          end
+
+          table.insert(api_comments, api_comment)
         end
       end
 
@@ -632,7 +683,7 @@ function M.add_pr_comment(pr_number, body, callback)
   })
 end
 
-function M.add_review_comment(pr_number, path, line, body, callback)
+function M.add_review_comment(pr_number, path, line, body, callback, start_line)
   local get_head_cmd = string.format("gh pr view %d --json headRefOid --jq '.headRefOid'", pr_number)
 
   vim.fn.jobstart(get_head_cmd, {
@@ -647,13 +698,21 @@ function M.add_review_comment(pr_number, path, line, body, callback)
 
       local commit_id = data[1]:gsub("%s+", "")
 
-      local json_body = vim.fn.json_encode({
+      local comment_data = {
         body = body,
         path = path,
         line = line,
         side = "RIGHT",
         commit_id = commit_id,
-      })
+      }
+
+      -- For multi-line comments, add start_line and start_side
+      if start_line and start_line ~= line then
+        comment_data.start_line = start_line
+        comment_data.start_side = "RIGHT"
+      end
+
+      local json_body = vim.fn.json_encode(comment_data)
 
       local cmd = string.format(
         "gh api repos/{owner}/{repo}/pulls/%d/comments -X POST --input -",
@@ -765,7 +824,7 @@ end
 -- Helper function to create a pending review with comments
 local function create_pending_review_with_comments(pr_number, commit_id, comments, callback)
   vim.schedule(function()
-    vim.notify(string.format("Debug: Creating review with %d comments", #comments), vim.log.levels.INFO)
+    debug_log(string.format("Debug: Creating review with %d comments", #comments))
   end)
 
   local review_body = vim.fn.json_encode({
@@ -775,7 +834,7 @@ local function create_pending_review_with_comments(pr_number, commit_id, comment
   })
 
   vim.schedule(function()
-    vim.notify(string.format("Debug: Review body: %s", review_body:sub(1, 300)), vim.log.levels.INFO)
+    debug_log(string.format("Debug: Review body: %s", review_body:sub(1, 300)))
   end)
 
   local cmd = string.format(
@@ -806,8 +865,8 @@ local function create_pending_review_with_comments(pr_number, commit_id, comment
         else
           local err_msg = table.concat(stderr_output, "\n")
           local out_msg = table.concat(stdout_output, "\n")
-          vim.notify(string.format("Debug: Create failed - Stdout: %s", out_msg), vim.log.levels.INFO)
-          vim.notify(string.format("Debug: Create failed - Stderr: %s", err_msg), vim.log.levels.INFO)
+          debug_log(string.format("Debug: Create failed - Stdout: %s", out_msg))
+          debug_log(string.format("Debug: Create failed - Stderr: %s", err_msg))
           callback(false, "Failed to create pending review: " .. err_msg)
         end
       end)
@@ -851,13 +910,13 @@ function M.add_pending_review_comment(pr_number, path, line, body, callback)
 
           if review_id then
             vim.schedule(function()
-              vim.notify(string.format("Debug: Found existing pending review ID: %d", review_id), vim.log.levels.INFO)
+              debug_log(string.format("Debug: Found existing pending review ID: %d", review_id))
             end)
 
             -- Get existing comments from the pending review
             M.get_pending_review_comments(pr_number, function(existing_comments, err)
               vim.schedule(function()
-                vim.notify(string.format("Debug: Found %d existing pending comments", #(existing_comments or {})), vim.log.levels.INFO)
+                debug_log(string.format("Debug: Found %d existing pending comments", #(existing_comments or {})))
               end)
 
               -- Build the comments array with existing + new comment
@@ -882,8 +941,8 @@ function M.add_pending_review_comment(pr_number, path, line, body, callback)
               })
 
               vim.schedule(function()
-                vim.notify(string.format("Debug: Total comments to add: %d", #all_comments), vim.log.levels.INFO)
-                vim.notify(string.format("Debug: Deleting existing review ID: %d", review_id), vim.log.levels.INFO)
+                debug_log(string.format("Debug: Total comments to add: %d", #all_comments))
+                debug_log(string.format("Debug: Deleting existing review ID: %d", review_id))
               end)
 
               -- Delete the existing pending review
@@ -896,7 +955,7 @@ function M.add_pending_review_comment(pr_number, path, line, body, callback)
               vim.fn.jobstart(delete_cmd, {
                 on_exit = function(_, del_code)
                   vim.schedule(function()
-                    vim.notify(string.format("Debug: Delete exit code: %d", del_code), vim.log.levels.INFO)
+                    debug_log(string.format("Debug: Delete exit code: %d", del_code))
                     if del_code == 0 then
                       -- Now create the new review with all comments
                       create_pending_review_with_comments(pr_number, commit_id, all_comments, callback)
@@ -909,7 +968,7 @@ function M.add_pending_review_comment(pr_number, path, line, body, callback)
             end)
           else
             vim.schedule(function()
-              vim.notify("Debug: No existing pending review found", vim.log.levels.INFO)
+              debug_log("Debug: No existing pending review found")
             end)
 
             -- No existing review, just create new with the comment
@@ -997,7 +1056,7 @@ function M.get_pending_review_comments(pr_number, callback)
 
                     -- Debug: log all line-related fields
                     vim.schedule(function()
-                      vim.notify(string.format("Debug: Comment fields - line=%s, original_line=%s, start_line=%s, position=%s, original_position=%s",
+                      debug_log(string.format("Debug: Comment fields - line=%s, original_line=%s, start_line=%s, position=%s, original_position=%s",
                         tostring(comment.line),
                         tostring(comment.original_line),
                         tostring(comment.start_line),

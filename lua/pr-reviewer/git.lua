@@ -1,5 +1,13 @@
 local M = {}
 
+-- Debug logging helper
+local function debug_log(msg)
+  local pr_reviewer = require("pr-reviewer")
+  if pr_reviewer.config.debug then
+    vim.notify(msg, vim.log.levels.INFO)
+  end
+end
+
 function M.get_current_branch()
   local result = vim.fn.system("git branch --show-current"):gsub("%s+", "")
   if vim.v.shell_error ~= 0 then
@@ -150,18 +158,18 @@ function M.soft_merge(source_branch, head_repo_owner, head_repo_url, callback)
       local remote_source = remote .. "/" .. source_branch
       local cmd = string.format("git merge --no-commit --no-ff %s", remote_source)
 
-      vim.notify(string.format("Debug: Merging %s", remote_source), vim.log.levels.INFO)
+      debug_log(string.format("Debug: Merging %s", remote_source))
 
       vim.fn.jobstart(cmd, {
         on_exit = function(_, code)
           vim.schedule(function()
-            vim.notify(string.format("Debug: Merge exit code = %d", code), vim.log.levels.INFO)
+            debug_log(string.format("Debug: Merge exit code = %d", code))
             if code == 0 then
               M._unstage_all(callback)
             else
               -- Check if it's a conflict situation
               local status = vim.fn.system("git status --porcelain")
-              vim.notify(string.format("Debug: Git status after merge: %s", status:sub(1, 200)), vim.log.levels.INFO)
+              debug_log(string.format("Debug: Git status after merge: %s", status:sub(1, 200)))
               local has_conflicts = status:match("UU ") or status:match("AA ") or status:match("DD ")
 
               if has_conflicts then
@@ -246,7 +254,7 @@ end
 function M.get_modified_files_with_lines(callback)
   local result = vim.fn.system("git diff --name-status")
   vim.schedule(function()
-    vim.notify(string.format("Debug: git diff output (first 200 chars): %s", result:sub(1, 200)), vim.log.levels.INFO)
+    debug_log(string.format("Debug: git diff output (first 200 chars): %s", result:sub(1, 200)))
   end)
 
   if vim.v.shell_error ~= 0 then
@@ -263,7 +271,7 @@ function M.get_modified_files_with_lines(callback)
   end
 
   vim.schedule(function()
-    vim.notify(string.format("Debug: Found %d files", #files), vim.log.levels.INFO)
+    debug_log(string.format("Debug: Found %d files", #files))
   end)
 
   local untracked = vim.fn.system("git ls-files --others --exclude-standard")
