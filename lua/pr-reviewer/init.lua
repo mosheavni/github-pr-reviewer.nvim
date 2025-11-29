@@ -423,12 +423,133 @@ get_inline_diff = function(file_path, status, callback)
   })
 end
 
+-- Helper to get syntax-highlighted chunks for a line
+-- Helper to create or get a combined highlight group (syntax + DiffDelete background)
+local function get_combined_hl(syntax_hl)
+  if not syntax_hl or syntax_hl == "" then
+    return "DiffDelete"
+  end
+
+  local combined_name = "DiffDelete_" .. syntax_hl:gsub("[^%w]", "_")
+
+  -- Check if highlight group already exists
+  local exists = vim.fn.hlexists(combined_name) == 1
+
+  if not exists then
+    -- Get the foreground color from the syntax highlight
+    local syntax_def = vim.api.nvim_get_hl(0, { name = syntax_hl, link = false })
+    -- Get the background color from DiffDelete
+    local diff_delete_def = vim.api.nvim_get_hl(0, { name = "DiffDelete", link = false })
+
+    -- Create combined highlight: fg from syntax, bg from DiffDelete
+    vim.api.nvim_set_hl(0, combined_name, {
+      fg = syntax_def.fg,
+      bg = diff_delete_def.bg,
+      sp = syntax_def.sp,
+      bold = syntax_def.bold,
+      italic = syntax_def.italic,
+      underline = syntax_def.underline,
+    })
+  end
+
+  return combined_name
+end
+
+local function get_syntax_highlights(text, filetype)
+  if text == "" then
+    return { { "", "DiffDelete" } }
+  end
+
+  -- Create a temporary scratch buffer
+  local temp_buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[temp_buf].filetype = filetype
+
+  -- Set the text
+  vim.api.nvim_buf_set_lines(temp_buf, 0, -1, false, { text })
+
+  -- Force treesitter/syntax to attach
+  vim.bo[temp_buf].syntax = "on"
+
+  -- Wait for highlighting to be applied
+  vim.wait(100, function() return false end)
+
+  -- Capture highlights by scanning each character position
+  local hl_map = {}
+
+  local ok = pcall(function()
+    vim.api.nvim_buf_call(temp_buf, function()
+      for col = 0, #text - 1 do
+        -- Use inspect_pos to get all highlights at this position (works with treesitter and syntax)
+        local pos_info = vim.inspect_pos(temp_buf, 0, col)
+
+        -- Try treesitter first
+        if pos_info.treesitter and #pos_info.treesitter > 0 then
+          -- Get the most specific (last) treesitter capture
+          local ts_hl = pos_info.treesitter[#pos_info.treesitter]
+          if ts_hl and ts_hl.capture then
+            hl_map[col] = "@" .. ts_hl.capture
+          end
+        -- Fallback to syntax highlighting
+        elseif pos_info.syntax and #pos_info.syntax > 0 then
+          local syn_hl = pos_info.syntax[#pos_info.syntax]
+          if syn_hl and syn_hl.hl_group then
+            hl_map[col] = syn_hl.hl_group
+          end
+        end
+      end
+    end)
+  end)
+
+  -- Build chunks from consecutive characters with same highlight
+  local chunks = {}
+  local current_hl = nil
+  local current_text = ""
+
+  for col = 0, #text - 1 do
+    local char = text:sub(col + 1, col + 1)
+    local hl = hl_map[col]
+
+    if hl ~= current_hl then
+      -- Flush previous chunk
+      if current_text ~= "" then
+        local combined = get_combined_hl(current_hl)
+        table.insert(chunks, { current_text, combined })
+      end
+      -- Start new chunk
+      current_hl = hl
+      current_text = char
+    else
+      -- Continue current chunk
+      current_text = current_text .. char
+    end
+  end
+
+  -- Flush final chunk
+  if current_text ~= "" then
+    local combined = get_combined_hl(current_hl)
+    table.insert(chunks, { current_text, combined })
+  end
+
+  -- Cleanup
+  vim.api.nvim_buf_delete(temp_buf, { force = true })
+
+  -- If no chunks were created, return the whole line with DiffDelete
+  if #chunks == 0 then
+    return { { text, "DiffDelete" } }
+  end
+
+  return chunks
+end
+
 local function display_inline_diff(bufnr, hunks)
   if not M.config.show_inline_diff then
     return
   end
 
   vim.api.nvim_buf_clear_namespace(bufnr, diff_ns_id, 0, -1)
+
+  -- Get the filetype for syntax highlighting
+  local filetype = vim.bo[bufnr].filetype or ""
 
   for _, hunk in ipairs(hunks) do
     local new_line = hunk.new_start
@@ -439,8 +560,9 @@ local function display_inline_diff(bufnr, hunks)
 
       local virt_lines = {}
       for _, removed in ipairs(hunk.removed_lines) do
-        -- Keep the original indentation of the removed line
-        table.insert(virt_lines, { { removed, "DiffDelete" } })
+        -- Get syntax-highlighted chunks for the removed line
+        local chunks = get_syntax_highlights(removed, filetype)
+        table.insert(virt_lines, chunks)
       end
 
       -- Place virtual lines above the first new line
