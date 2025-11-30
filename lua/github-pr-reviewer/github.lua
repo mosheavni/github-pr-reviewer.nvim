@@ -1,7 +1,6 @@
 local M = {}
 
 M._comments_cache = {}
-M._viewed_prs = {}
 
 -- Debug logging helper
 local function debug_log(msg)
@@ -250,69 +249,6 @@ function M.list_review_requests(callback)
   })
 end
 
-function M.mark_pr_as_viewed(pr_number, callback)
-  -- Mark as viewed locally first (hides from list in this session)
-  M._viewed_prs[pr_number] = true
-
-  -- Also mark files as viewed on GitHub
-  local cmd = string.format("gh pr view %d --json files --jq '.files[].path'", pr_number)
-
-  vim.fn.jobstart(cmd, {
-    stdout_buffered = true,
-    on_stdout = function(_, data)
-      if not data or #data == 0 then
-        vim.schedule(function()
-          callback(true, nil)
-        end)
-        return
-      end
-
-      local files = {}
-      for _, file in ipairs(data) do
-        if file and file ~= "" then
-          table.insert(files, file)
-        end
-      end
-
-      if #files == 0 then
-        vim.schedule(function()
-          callback(true, nil)
-        end)
-        return
-      end
-
-      local pending = #files
-
-      for _, file in ipairs(files) do
-        local view_cmd = string.format(
-          "gh api repos/{owner}/{repo}/pulls/%d/viewed -X PUT -f path=%s 2>/dev/null || true",
-          pr_number,
-          vim.fn.shellescape(file)
-        )
-
-        vim.fn.jobstart(view_cmd, {
-          on_exit = function()
-            pending = pending - 1
-            if pending == 0 then
-              vim.schedule(function()
-                callback(true, nil)
-              end)
-            end
-          end,
-        })
-      end
-    end,
-    on_stderr = function()
-      vim.schedule(function()
-        callback(true, nil)
-      end)
-    end,
-  })
-end
-
-function M.clear_viewed_prs()
-  M._viewed_prs = {}
-end
 
 function M.get_pr_info(pr_number, callback)
   local cmd = string.format(
@@ -429,6 +365,52 @@ function M.get_pr_checks(pr_number, callback)
 
       vim.schedule(function()
         callback(checks, nil)
+      end)
+    end,
+    on_stderr = function(_, data)
+      if data and data[1] and data[1] ~= "" then
+        vim.schedule(function()
+          callback({}, table.concat(data, "\n"))
+        end)
+      end
+    end,
+  })
+end
+
+-- Fetch global/issue comments (not line-specific comments)
+function M.fetch_pr_global_comments(pr_number, callback)
+  local cmd = string.format(
+    "gh api repos/{owner}/{repo}/issues/%d/comments --jq '.[] | {id: .id, body: .body, user: .user.login, created_at: .created_at}'",
+    pr_number
+  )
+
+  vim.fn.jobstart(cmd, {
+    stdout_buffered = true,
+    on_stdout = function(_, data)
+      if not data or #data == 0 or (data[1] == "" and #data == 1) then
+        vim.schedule(function()
+          callback({}, nil)
+        end)
+        return
+      end
+
+      local comments = {}
+      for _, line in ipairs(data) do
+        if line and line ~= "" then
+          local ok, comment = pcall(vim.fn.json_decode, line)
+          if ok and comment then
+            table.insert(comments, {
+              id = comment.id,
+              body = comment.body,
+              user = comment.user,
+              created_at = comment.created_at,
+            })
+          end
+        end
+      end
+
+      vim.schedule(function()
+        callback(comments, nil)
       end)
     end,
     on_stderr = function(_, data)

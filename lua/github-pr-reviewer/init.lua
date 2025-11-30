@@ -432,9 +432,10 @@ end
 
 -- Helper to get syntax-highlighted chunks for a line
 local function get_syntax_highlights(text, filetype)
-  -- Simply return text with DiffDelete highlight
+  -- Simply return text with DiffDelete highlight, preserving indentation
   -- Note: Syntax highlighting for deleted lines was removed due to severe performance issues
   -- (vim.inspect_pos() for every character was extremely slow)
+  -- Return text without prefix, preserving original indentation
   return { { text, "DiffDelete" } }
 end
 
@@ -667,12 +668,9 @@ local function create_split_view(current_bufnr, file_path)
     original_win = current_win,
     file_path = file_path,
   }
-
-  vim.notify("Split view enabled - Press " .. M.config.diff_view_toggle_key .. " to return to unified view",
-    vim.log.levels.INFO)
 end
 
-local function restore_unified_view(bufnr)
+local function restore_unified_view()
   if not M._split_view_state or not M._split_view_state.base_buf then
     return
   end
@@ -713,8 +711,6 @@ local function restore_unified_view(bufnr)
 
   -- Clear state
   M._split_view_state = {}
-
-  vim.notify("Unified view restored", vim.log.levels.INFO)
 end
 
 -- Toggle between unified and split diff view
@@ -858,9 +854,9 @@ local function render_review_buffer()
 
           local filename = file.path:match("[^/]+$")
           local status_icon = file.status == "M" and "M" or
-          (file.status == "A" and "A" or (file.status == "D" and "D" or "N"))
+              (file.status == "A" and "A" or (file.status == "D" and "D" or "N"))
           local viewed_icon = file.viewed and (M.config.show_icons and "✓" or "[V]") or
-          (M.config.show_icons and "○" or "[ ]")
+              (M.config.show_icons and "○" or "[ ]")
           local stats_str = string.format("+%d ~%d -%d", file.stats.additions, file.stats.modifications,
             file.stats.deletions)
 
@@ -909,11 +905,11 @@ local function render_review_buffer()
       table.insert(M._review_files_ordered, file)
 
       local status_icon = file.status == "M" and "M" or
-      (file.status == "A" and "A" or (file.status == "D" and "D" or "N"))
+          (file.status == "A" and "A" or (file.status == "D" and "D" or "N"))
       local viewed_icon = file.viewed and (M.config.show_icons and "✓" or "[V]") or
-      (M.config.show_icons and "○" or "[ ]")
+          (M.config.show_icons and "○" or "[ ]")
       local stats_str = string.format("+%d ~%d -%d", file.stats.additions, file.stats.modifications, file.stats
-      .deletions)
+        .deletions)
 
       -- Add indicator for current file
       local current_indicator = ""
@@ -1026,11 +1022,7 @@ local function open_file_safe(file, split_cmd)
     if existing_buf ~= -1 then
       -- Buffer already exists, just switch to it
       vim.api.nvim_set_current_buf(existing_buf)
-
-      -- Mark as viewed
-      M._viewed_files[file.path] = true
-      save_session()
-      M.refresh_review_buffer()
+      -- Don't auto-mark as viewed - user should explicitly mark with mark_as_viewed_key
     else
       -- Open deleted file from HEAD
       local cmd = string.format("git show HEAD:%s", vim.fn.shellescape(file.path))
@@ -1068,11 +1060,7 @@ local function open_file_safe(file, split_cmd)
             end
 
             vim.api.nvim_set_current_buf(buf)
-
-            -- Mark this buffer as viewed when opened
-            M._viewed_files[file.path] = true
-            save_session()
-            M.refresh_review_buffer()
+            -- Don't auto-mark as viewed - user should explicitly mark with mark_as_viewed_key
           end)
         end,
       })
@@ -1494,17 +1482,17 @@ update_changes_float = function()
   -- Create the 3 floats stacked vertically
   -- Use red border for deleted files
   local border_hl = file_status == "D" and "Normal:DiagnosticError,FloatBorder:DiagnosticError" or
-  "Normal:DiagnosticInfo,FloatBorder:DiagnosticInfo"
+      "Normal:DiagnosticInfo,FloatBorder:DiagnosticInfo"
   M._float_win_general = create_or_update_float(M._float_win_general, general_lines, 0, border_hl)
 
   local general_height = #general_lines + 2 -- +2 for border
   local buffer_hl = file_status == "D" and "Normal:DiagnosticError,FloatBorder:DiagnosticError" or
-  "Normal:DiagnosticHint,FloatBorder:DiagnosticHint"
+      "Normal:DiagnosticHint,FloatBorder:DiagnosticHint"
   M._float_win_buffer = create_or_update_float(M._float_win_buffer, buffer_lines, general_height, buffer_hl)
 
   local buffer_height = #buffer_lines + 2
   local keymap_hl = file_status == "D" and "Normal:DiagnosticError,FloatBorder:DiagnosticError" or
-  "Normal:DiagnosticWarn,FloatBorder:DiagnosticWarn"
+      "Normal:DiagnosticWarn,FloatBorder:DiagnosticWarn"
   M._float_win_keymaps = create_or_update_float(M._float_win_keymaps, keymap_lines, general_height + buffer_height,
     keymap_hl)
 end
@@ -1557,9 +1545,11 @@ function M.next_hunk()
   local cursor = vim.api.nvim_win_get_cursor(0)
   local current_line = cursor[1]
 
+  local line_count = vim.api.nvim_buf_line_count(bufnr)
+
   -- Find the next hunk after the current cursor position
   for _, hunk in ipairs(hunks) do
-    if hunk.start_line > current_line then
+    if hunk.start_line > current_line and hunk.start_line <= line_count then
       vim.api.nvim_win_set_cursor(0, { hunk.start_line, 0 })
       vim.cmd("normal! zz")
       return
@@ -1567,8 +1557,10 @@ function M.next_hunk()
   end
 
   -- If no hunk found after cursor, wrap to first hunk
-  vim.api.nvim_win_set_cursor(0, { hunks[1].start_line, 0 })
-  vim.cmd("normal! zz")
+  if hunks[1].start_line > 0 and hunks[1].start_line <= line_count then
+    vim.api.nvim_win_set_cursor(0, { hunks[1].start_line, 0 })
+    vim.cmd("normal! zz")
+  end
 end
 
 function M.prev_hunk()
@@ -1587,10 +1579,12 @@ function M.prev_hunk()
   local cursor = vim.api.nvim_win_get_cursor(0)
   local current_line = cursor[1]
 
+  local line_count = vim.api.nvim_buf_line_count(bufnr)
+
   -- Find the previous hunk before the current cursor position
   for i = #hunks, 1, -1 do
     local hunk = hunks[i]
-    if hunk.start_line < current_line then
+    if hunk.start_line < current_line and hunk.start_line > 0 and hunk.start_line <= line_count then
       vim.api.nvim_win_set_cursor(0, { hunk.start_line, 0 })
       vim.cmd("normal! zz")
       return
@@ -1598,8 +1592,10 @@ function M.prev_hunk()
   end
 
   -- If no hunk found before cursor, wrap to last hunk
-  vim.api.nvim_win_set_cursor(0, { hunks[#hunks].start_line, 0 })
-  vim.cmd("normal! zz")
+  if hunks[#hunks].start_line > 0 and hunks[#hunks].start_line <= line_count then
+    vim.api.nvim_win_set_cursor(0, { hunks[#hunks].start_line, 0 })
+    vim.cmd("normal! zz")
+  end
 end
 
 function M.next_file()
@@ -2702,7 +2698,7 @@ function M.add_review_comment_with_selection()
 
   -- Prompt for comment
   input_multiline(
-  "Suggested change (edit the code above, line " .. temp_selection.start_line .. "-" .. temp_selection.end_line .. ")",
+    "Suggested change (edit the code above, line " .. temp_selection.start_line .. "-" .. temp_selection.end_line .. ")",
     function(body)
       if not body then
         return
@@ -2747,31 +2743,31 @@ function M.add_pending_comment_with_selection()
 
   -- Prompt for comment
   input_multiline(
-  "Pending suggested change (edit the code above, line " ..
-  temp_selection.start_line .. "-" .. temp_selection.end_line .. ")", function(body)
-    if not body then
-      return
-    end
+    "Pending suggested change (edit the code above, line " ..
+    temp_selection.start_line .. "-" .. temp_selection.end_line .. ")", function(body)
+      if not body then
+        return
+      end
 
-    -- Get current user
-    github.get_current_user(function(user, err)
-      local username = user or "me"
+      -- Get current user
+      github.get_current_user(function(user, err)
+        local username = user or "me"
 
-      -- Store the range info in the comment body for later use
-      local comment_with_range = body .. "\n<!-- PR_RANGE:" .. start_line .. "-" .. end_line .. " -->"
+        -- Store the range info in the comment body for later use
+        local comment_with_range = body .. "\n<!-- PR_RANGE:" .. start_line .. "-" .. end_line .. " -->"
 
-      -- Add comment to local storage
-      add_local_pending_comment(pr_number, file_path, end_line, comment_with_range, username, start_line)
+        -- Add comment to local storage
+        add_local_pending_comment(pr_number, file_path, end_line, comment_with_range, username, start_line)
 
-      -- Save session to persist pending comments
-      save_session()
+        -- Save session to persist pending comments
+        save_session()
 
-      vim.notify("✅ Pending suggestion added locally (will be posted with approval/rejection)", vim.log.levels.INFO)
+        vim.notify("✅ Pending suggestion added locally (will be posted with approval/rejection)", vim.log.levels.INFO)
 
-      -- Reload comments to show the new pending comment
-      M.load_comments_for_buffer(bufnr, false)
-    end)
-  end, suggestion_text)
+        -- Reload comments to show the new pending comment
+        M.load_comments_for_buffer(bufnr, false)
+      end)
+    end, suggestion_text)
 end
 
 function M.add_review_comment()
@@ -3071,6 +3067,108 @@ function M.list_all_comments()
       string.format("[%s] %s:%d - %s", status, file_path, selected_comment.line, selected_comment.user),
       vim.log.levels.INFO
     )
+  end)
+end
+
+-- List and view global PR comments (issue comments, not line-specific)
+function M.list_global_comments()
+  local pr_number = vim.g.pr_review_number
+  if not pr_number then
+    vim.notify("Not in review mode", vim.log.levels.WARN)
+    return
+  end
+
+  github.fetch_pr_global_comments(pr_number, function(comments, err)
+    if err then
+      vim.notify("Failed to fetch global comments: " .. err, vim.log.levels.ERROR)
+      return
+    end
+
+    if #comments == 0 then
+      vim.notify("No global comments in this PR", vim.log.levels.INFO)
+      return
+    end
+
+    -- Use the UI picker to select a comment
+    ui.select_global_comments(comments, M.config.picker, function(comment, index)
+      if not comment then
+        return
+      end
+
+      -- Show full comment in a floating window
+      local lines = vim.split(comment.body, "\n")
+
+      -- Add header
+      table.insert(lines, 1, "")
+      table.insert(lines, 1, string.format("By: %s", comment.user))
+      table.insert(lines, 1, string.format("Comment #%d", index or 1))
+      table.insert(lines, 2, string.format("Date: %s", comment.created_at))
+      table.insert(lines, 3, "")
+      table.insert(lines, 4, "───────────────────────────────")
+      table.insert(lines, 5, "")
+
+      -- Add footer with actions
+      table.insert(lines, "")
+      table.insert(lines, "───────────────────────────────")
+      table.insert(lines, "")
+      table.insert(lines, "Press 'r' to reply | 'q' or <Esc> to close")
+
+      local buf = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+      vim.bo[buf].filetype = "markdown"
+      vim.bo[buf].bufhidden = "wipe"
+      vim.bo[buf].modifiable = false
+
+      local width = math.min(80, math.floor(vim.o.columns * 0.8))
+      local height = math.min(#lines + 2, math.floor(vim.o.lines * 0.8))
+      local win = vim.api.nvim_open_win(buf, true, {
+        relative = "editor",
+        width = width,
+        height = height,
+        col = math.floor((vim.o.columns - width) / 2),
+        row = math.floor((vim.o.lines - height) / 2),
+        style = "minimal",
+        border = "rounded",
+        title = " Global Comment ",
+        title_pos = "center",
+      })
+
+      -- Keymaps for the comment window
+      local function close_window()
+        -- Delete buffer first (will auto-close window due to bufhidden=wipe)
+        pcall(vim.api.nvim_buf_delete, buf, { force = true })
+        -- Also try to close window if still valid
+        pcall(vim.api.nvim_win_close, win, true)
+      end
+
+      vim.keymap.set("n", "q", close_window, { buffer = buf, nowait = true })
+      vim.keymap.set("n", "<Esc>", close_window, { buffer = buf, nowait = true })
+
+      vim.keymap.set("n", "r", function()
+        close_window()
+        -- Reply to the comment
+        vim.ui.input({ prompt = "Reply: " }, function(reply_text)
+          if reply_text and reply_text ~= "" then
+            github.add_pr_comment(pr_number, reply_text, function(ok, add_err)
+              if ok then
+                vim.notify("✅ Reply added successfully", vim.log.levels.INFO)
+              else
+                vim.notify("❌ Failed to add reply: " .. (add_err or "unknown"), vim.log.levels.ERROR)
+              end
+            end)
+          end
+        end)
+      end, { buffer = buf })
+
+      -- Auto-close if user leaves the buffer (e.g., switches windows)
+      vim.api.nvim_create_autocmd("BufLeave", {
+        buffer = buf,
+        once = true,
+        callback = function()
+          vim.defer_fn(close_window, 10)
+        end,
+      })
+    end)
   end)
 end
 
@@ -3595,6 +3693,8 @@ function M.show_pr_info()
         local passed = 0
         local failed = 0
         local pending = 0
+        local failed_jobs = {}
+        local pending_jobs = {}
 
         for _, check in ipairs(ci_checks) do
           local icon
@@ -3606,16 +3706,29 @@ function M.show_pr_info()
           elseif status == "failure" or status == "FAILURE" then
             icon = check_fail_icon
             failed = failed + 1
+            table.insert(failed_jobs, check.name)
           else
             icon = check_pending_icon
             pending = pending + 1
+            table.insert(pending_jobs, check.name)
           end
 
           table.insert(lines, string.format("%s %s", icon, check.name))
         end
 
         table.insert(lines, "")
-        table.insert(lines, string.format("Total: %d passed, %d failed, %d pending", passed, failed, pending))
+        local total_jobs = passed + failed + pending
+        table.insert(lines, string.format("**Summary:** %d/%d jobs passed", passed, total_jobs))
+
+        if failed > 0 then
+          table.insert(lines, string.format("%s **Failed jobs:** %s", check_fail_icon, table.concat(failed_jobs, ", ")))
+        end
+
+        if pending > 0 then
+          table.insert(lines,
+            string.format("%s **Pending jobs:** %s", check_pending_icon, table.concat(pending_jobs, ", ")))
+        end
+
         table.insert(lines, "")
       end
 
@@ -3645,13 +3758,24 @@ function M.show_pr_info()
         title_pos = "center",
       })
 
-      vim.keymap.set("n", "q", function()
-        vim.api.nvim_win_close(win, true)
-      end, { buffer = buf })
+      local function close_window()
+        -- Delete buffer first (will auto-close window due to bufhidden=wipe)
+        pcall(vim.api.nvim_buf_delete, buf, { force = true })
+        -- Also try to close window if still valid
+        pcall(vim.api.nvim_win_close, win, true)
+      end
 
-      vim.keymap.set("n", "<Esc>", function()
-        vim.api.nvim_win_close(win, true)
-      end, { buffer = buf })
+      vim.keymap.set("n", "q", close_window, { buffer = buf, nowait = true })
+      vim.keymap.set("n", "<Esc>", close_window, { buffer = buf, nowait = true })
+
+      -- Auto-close if user leaves the buffer (e.g., switches windows)
+      vim.api.nvim_create_autocmd("BufLeave", {
+        buffer = buf,
+        once = true,
+        callback = function()
+          vim.defer_fn(close_window, 10)
+        end,
+      })
     end) -- End of get_pr_checks callback
   end)   -- End of get_pr_info callback
 end
@@ -3683,7 +3807,7 @@ local function check_and_cleanup_if_needed(callback)
       { "Yes, cleanup first", "No, continue without cleanup" },
       {
         prompt = "You are already reviewing PR #" ..
-        vim.g.pr_review_number .. ". Do you want to cleanup the current review before starting a new one?",
+            vim.g.pr_review_number .. ". Do you want to cleanup the current review before starting a new one?",
       },
       function(choice)
         if not choice then
@@ -3738,21 +3862,7 @@ function M.list_review_requests()
         M._start_review_for_pr(pr)
       end
 
-      local function on_mark_viewed(pr)
-        if not pr then
-          return
-        end
-        vim.notify("Marking PR #" .. pr.number .. " as viewed...", vim.log.levels.INFO)
-        github.mark_pr_as_viewed(pr.number, function(ok, mark_err)
-          if ok then
-            vim.notify("✅ PR #" .. pr.number .. " marked as viewed", vim.log.levels.INFO)
-          else
-            vim.notify("❌ Failed to mark as viewed: " .. (mark_err or "unknown"), vim.log.levels.ERROR)
-          end
-        end)
-      end
-
-      ui.select_review_request(prs, M.config.picker, M.config.show_icons, on_select, on_mark_viewed)
+      ui.select_review_request(prs, M.config.picker, M.config.show_icons, on_select)
     end)
   end)
 end
@@ -3919,6 +4029,10 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("PRListAllComments", function()
     M.list_all_comments()
   end, { desc = "List all comments (pending + posted) with preview" })
+
+  vim.api.nvim_create_user_command("PRGlobalComments", function()
+    M.list_global_comments()
+  end, { desc = "List and view global PR comments" })
 
   vim.api.nvim_create_user_command("PRReply", function()
     M.reply_to_comment()
@@ -4462,6 +4576,7 @@ function M.show_review_menu()
           { key = "l", desc = "Add Line Comment",    cmd = function() M.add_review_comment() end },
           { key = "p", desc = "Add Pending Comment", cmd = function() M.add_pending_comment() end },
           { key = "v", desc = "List All Comments",   cmd = function() M.list_all_comments() end },
+          { key = "g", desc = "Global PR Comments",  cmd = function() M.list_global_comments() end },
           { key = "r", desc = "Reply to Comment",    cmd = function() M.reply_to_comment() end },
           { key = "d", desc = "Delete Comment",      cmd = function() M.delete_my_comment() end },
         }

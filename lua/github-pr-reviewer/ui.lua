@@ -145,7 +145,7 @@ local function format_review_request(pr, show_icons)
   end
 end
 
-local function select_review_requests_native(prs, show_icons, on_select, on_mark_viewed)
+local function select_review_requests_native(prs, show_icons, on_select)
   local items = {}
   local pr_map = {}
 
@@ -156,7 +156,7 @@ local function select_review_requests_native(prs, show_icons, on_select, on_mark
   end
 
   vim.ui.select(items, {
-    prompt = "Select PR to review (no mark as viewed in native picker):",
+    prompt = "Select PR to review:",
     format_item = function(item)
       return item
     end,
@@ -167,11 +167,11 @@ local function select_review_requests_native(prs, show_icons, on_select, on_mark
   end)
 end
 
-local function select_review_requests_fzf(prs, show_icons, on_select, on_mark_viewed)
+local function select_review_requests_fzf(prs, show_icons, on_select)
   local ok, fzf = pcall(require, "fzf-lua")
   if not ok then
     vim.notify("fzf-lua not installed, falling back to native picker", vim.log.levels.WARN)
-    return select_review_requests_native(prs, show_icons, on_select, on_mark_viewed)
+    return select_review_requests_native(prs, show_icons, on_select)
   end
 
   local items = {}
@@ -185,30 +185,21 @@ local function select_review_requests_fzf(prs, show_icons, on_select, on_mark_vi
 
   fzf.fzf_exec(items, {
     prompt = "Review Requests> ",
-    fzf_opts = {
-      ["--header"] = "enter: review | ctrl-v: mark as viewed",
-    },
     actions = {
       ["default"] = function(selected)
         if selected and #selected > 0 then
           on_select(pr_map[selected[1]])
         end
       end,
-      ["ctrl-v"] = function(selected)
-        if selected and #selected > 0 then
-          local pr = pr_map[selected[1]]
-          on_mark_viewed(pr)
-        end
-      end,
     },
   })
 end
 
-local function select_review_requests_telescope(prs, show_icons, on_select, on_mark_viewed)
+local function select_review_requests_telescope(prs, show_icons, on_select)
   local ok, _ = pcall(require, "telescope")
   if not ok then
     vim.notify("telescope not installed, falling back to native picker", vim.log.levels.WARN)
-    return select_review_requests_native(prs, show_icons, on_select, on_mark_viewed)
+    return select_review_requests_native(prs, show_icons, on_select)
   end
 
   local pickers = require("telescope.pickers")
@@ -219,7 +210,7 @@ local function select_review_requests_telescope(prs, show_icons, on_select, on_m
 
   pickers
     .new({}, {
-      prompt_title = "Review Requests (enter: review | <C-v>: mark as viewed)",
+      prompt_title = "Review Requests",
       finder = finders.new_table({
         results = prs,
         entry_maker = function(pr)
@@ -241,27 +232,19 @@ local function select_review_requests_telescope(prs, show_icons, on_select, on_m
           end
         end)
 
-        map({ "i", "n" }, "<C-v>", function()
-          local selection = action_state.get_selected_entry()
-          if selection then
-            actions.close(prompt_bufnr)
-            on_mark_viewed(selection.value)
-          end
-        end)
-
         return true
       end,
     })
     :find()
 end
 
-function M.select_review_request(prs, picker, show_icons, on_select, on_mark_viewed)
+function M.select_review_request(prs, picker, show_icons, on_select)
   if picker == "fzf-lua" then
-    select_review_requests_fzf(prs, show_icons, on_select, on_mark_viewed)
+    select_review_requests_fzf(prs, show_icons, on_select)
   elseif picker == "telescope" then
-    select_review_requests_telescope(prs, show_icons, on_select, on_mark_viewed)
+    select_review_requests_telescope(prs, show_icons, on_select)
   else
-    select_review_requests_native(prs, show_icons, on_select, on_mark_viewed)
+    select_review_requests_native(prs, show_icons, on_select)
   end
 end
 
@@ -614,6 +597,175 @@ function M.select_all_comments(comments, picker, callback)
     select_all_comments_telescope(comments, callback)
   else
     select_all_comments_native(comments, callback)
+  end
+end
+
+-- Select global PR comment with fzf-lua
+local function select_global_comments_fzf(comments, callback)
+  local ok, fzf = pcall(require, "fzf-lua")
+  if not ok then
+    vim.notify("fzf-lua not installed, using native picker", vim.log.levels.WARN)
+    -- Fallback to vim.ui.select
+    local items = {}
+    for i, comment in ipairs(comments) do
+      local preview = comment.body:gsub("\n", " "):sub(1, 80)
+      if #comment.body > 80 then
+        preview = preview .. "..."
+      end
+      table.insert(items, string.format("#%d - %s: %s", i, comment.user, preview))
+    end
+    vim.ui.select(items, {
+      prompt = "Global PR Comments:",
+    }, function(_, idx)
+      if idx then
+        callback(comments[idx])
+      end
+    end)
+    return
+  end
+
+  if #comments == 0 then
+    vim.notify("No global comments", vim.log.levels.INFO)
+    return
+  end
+
+  -- Create entries with index
+  local entries = {}
+  for i, comment in ipairs(comments) do
+    local preview = comment.body:gsub("\n", " "):sub(1, 60)
+    if #comment.body > 60 then
+      preview = preview .. "..."
+    end
+    local entry = string.format("%d|%s: %s", i, comment.user, preview)
+    table.insert(entries, entry)
+  end
+
+  fzf.fzf_exec(entries, {
+    prompt = "Global Comments> ",
+    fzf_opts = {
+      ["--delimiter"] = "|",
+      ["--with-nth"] = "2..",
+      ["--preview"] = "echo {}  | cut -d'|' -f2-",
+      ["--preview-window"] = "down:40%:wrap",
+    },
+    actions = {
+      ["default"] = function(selected)
+        if selected and #selected > 0 then
+          local idx = tonumber(selected[1]:match("^(%d+)"))
+          if idx and comments[idx] then
+            callback(comments[idx], idx)
+          end
+        end
+      end,
+    },
+  })
+end
+
+-- Select global PR comment with telescope
+local function select_global_comments_telescope(comments, callback)
+  local ok, telescope = pcall(require, "telescope")
+  if not ok then
+    vim.notify("Telescope not installed, using native picker", vim.log.levels.WARN)
+    -- Fallback to vim.ui.select
+    local items = {}
+    for i, comment in ipairs(comments) do
+      local preview = comment.body:gsub("\n", " "):sub(1, 80)
+      if #comment.body > 80 then
+        preview = preview .. "..."
+      end
+      table.insert(items, string.format("#%d - %s: %s", i, comment.user, preview))
+    end
+    vim.ui.select(items, {
+      prompt = "Global PR Comments:",
+    }, function(_, idx)
+      if idx then
+        callback(comments[idx])
+      end
+    end)
+    return
+  end
+
+  if #comments == 0 then
+    vim.notify("No global comments", vim.log.levels.INFO)
+    return
+  end
+
+  local pickers = require("telescope.pickers")
+  local finders = require("telescope.finders")
+  local conf = require("telescope.config").values
+  local actions = require("telescope.actions")
+  local action_state = require("telescope.actions.state")
+  local previewers = require("telescope.previewers")
+
+  -- Create entries
+  local results = {}
+  for i, comment in ipairs(comments) do
+    table.insert(results, {
+      index = i,
+      user = comment.user,
+      body = comment.body,
+      created_at = comment.created_at,
+      display = string.format("#%d - %s (%s)", i, comment.user, comment.created_at:sub(1, 10)),
+    })
+  end
+
+  pickers.new({}, {
+    prompt_title = "Global PR Comments",
+    finder = finders.new_table({
+      results = results,
+      entry_maker = function(entry)
+        return {
+          value = entry,
+          display = entry.display,
+          ordinal = entry.display,
+        }
+      end,
+    }),
+    sorter = conf.generic_sorter({}),
+    previewer = previewers.new_buffer_previewer({
+      title = "Comment Body",
+      define_preview = function(self, entry)
+        local lines = vim.split(entry.value.body, "\n")
+        vim.api.nvim_buf_set_lines(self.state.bufnr, 0, -1, false, lines)
+        vim.bo[self.state.bufnr].filetype = "markdown"
+      end,
+    }),
+    attach_mappings = function(prompt_bufnr, map)
+      actions.select_default:replace(function()
+        local selection = action_state.get_selected_entry()
+        actions.close(prompt_bufnr)
+        if selection then
+          callback(comments[selection.value.index], selection.value.index)
+        end
+      end)
+      return true
+    end,
+  }):find()
+end
+
+-- Main function to select global comments with specified picker
+function M.select_global_comments(comments, picker, callback)
+  if picker == "fzf-lua" or picker == "fzf" then
+    select_global_comments_fzf(comments, callback)
+  elseif picker == "telescope" then
+    select_global_comments_telescope(comments, callback)
+  else
+    -- Use vim.ui.select as fallback
+    local items = {}
+    for i, comment in ipairs(comments) do
+      local preview = comment.body:gsub("\n", " "):sub(1, 80)
+      if #comment.body > 80 then
+        preview = preview .. "..."
+      end
+      table.insert(items, string.format("#%d - %s: %s", i, comment.user, preview))
+    end
+    vim.ui.select(items, {
+      prompt = "Global PR Comments:",
+    }, function(_, idx)
+      if idx then
+        callback(comments[idx], idx)
+      end
+    end)
   end
 end
 

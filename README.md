@@ -26,7 +26,7 @@ It is a experimental project and may contain bugs. Use at your own risk.
 - ✅ **Review PRs locally** - Checkout PR changes as unstaged modifications
 - ✅ **Session persistence** - Resume reviews after restarting Neovim
 - ✅ **Fork PR support** - Automatically handles PRs from forks
-- ✅ **Review requests** - List PRs where you're requested as reviewer with viewed status
+- ✅ **Review requests** - List PRs where you're requested as reviewer
 - ✅ **Review buffer** - Interactive file browser with foldable directories
 - ✅ **Split diff view** - Toggle between unified and split (side-by-side) diff view
 - ✅ **Change tracking** - See your progress with floating indicators (toggle on/off)
@@ -190,39 +190,72 @@ require("github-pr-reviewer").setup({
 
 ## Quick Start
 
-### The Efficient Way to Review PRs
+### The `:PR` Menu - Your Review Command Center
 
-1. **Start the review**
+**The easiest way to use this plugin is through the interactive `:PR` menu.** Simply type `:PR` and use single-key shortcuts to access all features:
+
+```vim
+:PR              " Open the interactive menu
+```
+
+From the menu, press:
+- `r` - Start reviewing a PR (list all open PRs)
+- `l` - List PRs where you're requested as reviewer
+- `b` - Toggle review buffer (see all changed files)
+- `i` - Show PR info (stats, reviews, CI checks)
+- `o` - Open PR in browser
+- `a` - **Approve** the PR
+- `x` - **Request changes** on the PR
+- `c` - Cleanup and exit review mode
+
+**No need to memorize commands!** The menu adapts based on whether you're in review mode or not, showing only relevant options.
+
+### Quick Review Workflow (Using the Menu)
+
+1. **Open the menu and start a review:**
    ```vim
    :PR
-   " or
-   :PRListReviewRequests
+   " Press 'r' to review a PR, or 'l' to see review requests
    ```
 
-2. **Use the Review Buffer** (`:PRReviewBuffer` or `b` in the menu)
-   - See all changed files at a glance
-   - Check which files you've already reviewed (✓ marked)
-   - Jump to any file instantly
-   - Mark files as viewed with `<CR>`
+2. **Browse changed files:**
+   ```vim
+   :PR
+   " Press 'b' to open the review buffer
+   " Press <CR> on a file to open it
+   " Press <CR> on a directory to collapse/expand it
+   ```
 
-3. **Navigate like you're coding**
-   - Use `gd` to jump to definitions (LSP)
-   - Use `gr` to find references (LSP)
-   - Use `K` to see documentation (LSP)
+3. **Navigate with full LSP support:**
+   - Use `gd` to jump to definitions
+   - Use `gr` to find references
+   - Use `K` to see documentation
    - Use Telescope/fzf to search across the codebase
-   - Use arrow/harpoon to mark important files for quick access
    - **You're not limited to changed lines** - explore the full context!
 
-4. **Add comments efficiently**
-   - Use `:PRPendingComment` to draft comments as you review
+4. **Add pending comments as you review:**
+   - Use `:PRPendingComment` to draft comments
    - All pending comments are saved locally
-   - Submit them all at once with `:PRApprove` or `:PRRequestChanges`
-   - Preview all pending comments before submitting
+   - You can continue reviewing multiple files
 
-5. **Track your progress**
-   - Floating indicator shows: viewed status, change position, stats, comments
-   - Press `<CR>` on a file to mark as viewed and jump to next file
-   - Review buffer shows overall progress
+5. **Finish the review:**
+   ```vim
+   :PR
+   " Press 'a' to approve (submits all pending comments)
+   " Or press 'x' to request changes
+   " Then press 'c' to cleanup and return to your branch
+   ```
+
+### Alternative: Direct Commands
+
+While the `:PR` menu is recommended, you can also use direct commands if you prefer:
+
+- `:PRReview` - Start reviewing a PR
+- `:PRReviewBuffer` - Toggle review buffer
+- `:PRApprove` - Approve the PR
+- `:PRReviewCleanup` - Exit review mode
+
+See the [Commands](#commands) section for the full list.
 
 ## Usage Guide
 
@@ -242,12 +275,8 @@ require("github-pr-reviewer").setup({
 
 Use `:PRListReviewRequests` to see PRs where you've been requested as a reviewer:
 
-- Shows PR info with additions/deletions stats and viewed status
-- **✓ viewed** indicator shows if you've already reviewed all files
+- Shows PR info with additions/deletions stats
 - **Enter**: Start reviewing the selected PR
-- **Ctrl-v** (fzf-lua/telescope): Mark PR as viewed without starting review
-
-The fzf-lua/telescope pickers show a hint header with available actions.
 
 ### Review Buffer (Interactive File Browser)
 
