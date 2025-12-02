@@ -1911,16 +1911,20 @@ local function load_changes_for_buffer(bufnr)
 
       vim.api.nvim_buf_clear_namespace(bufnr, changes_ns_id, 0, -1)
 
-      -- Don't show change indicators for completely new files (status "A" or "N")
-      -- Since everything is new, showing all lines as changed is not helpful
-      if status ~= "A" and status ~= "N" then
-        for _, line in ipairs(lines) do
-          local line_idx = line - 1
-          if line_idx >= 0 and line_idx < vim.api.nvim_buf_line_count(bufnr) then
-            vim.api.nvim_buf_set_extmark(bufnr, changes_ns_id, line_idx, 0, {
-              sign_text = "│",
-              sign_hl_group = "DiffAdd",
-            })
+      -- Only show visual change indicators (│) when NOT in split mode
+      -- In split mode, the diff view handles all visual highlighting
+      if M._diff_view_mode ~= "split" then
+        -- Don't show change indicators for completely new files (status "A" or "N")
+        -- Since everything is new, showing all lines as changed is not helpful
+        if status ~= "A" and status ~= "N" then
+          for _, line in ipairs(lines) do
+            local line_idx = line - 1
+            if line_idx >= 0 and line_idx < vim.api.nvim_buf_line_count(bufnr) then
+              vim.api.nvim_buf_set_extmark(bufnr, changes_ns_id, line_idx, 0, {
+                sign_text = "│",
+                sign_hl_group = "DiffAdd",
+              })
+            end
           end
         end
       end
@@ -4324,10 +4328,12 @@ function M.setup(opts)
 
         M.load_comments_for_buffer(args.buf)
 
-        -- Don't load changes OR inline diff when in split view mode
-        -- Diff mode handles all highlighting
+        -- Always load changes (for hunks data needed by floats)
+        -- Visual indicators (│) are only added when not in split mode (handled in load_changes_for_buffer)
+        load_changes_for_buffer(args.buf)
+
+        -- Only load inline diff when NOT in split mode
         if M._diff_view_mode ~= "split" then
-          load_changes_for_buffer(args.buf)
           load_inline_diff_for_buffer(args.buf)
         else
           -- Auto-fix split when buffer is changed manually (not from our navigation)
