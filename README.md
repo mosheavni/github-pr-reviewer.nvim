@@ -2,6 +2,9 @@
 
 A powerful Neovim plugin for reviewing GitHub Pull Requests directly in your editor. Review PRs with the full power of your development environment - LSP, navigation, favorite files, and all your familiar tools.
 
+![demo](https://i.imgur.com/o3y8C3R.gif)
+![menu](https://i.imgur.com/1x7pb8R.png)
+
 ## Disclaimer
 
 It is a experimental project and may contain bugs. Use at your own risk.

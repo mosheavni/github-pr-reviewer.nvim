@@ -1819,22 +1819,14 @@ local function update_hunk_navigation_hints()
         end
       end
 
-      -- Create custom highlight groups for hints with dimmed text
-      if is_changed_line then
-        -- Hint on diff line: green background, dimmed gray text
-        vim.api.nvim_set_hl(0, "PRHintOnDiff", { fg = "#6c7086", bg = "#40a02b" })
-        vim.api.nvim_buf_set_extmark(bufnr, hunk_hints_ns_id, line_idx, 0, {
-          virt_text = { { hint_text, "PRHintOnDiff" } },
-          virt_text_pos = "eol",
-        })
-      else
-        -- Hint on normal line: normal background, dimmed gray text
-        vim.api.nvim_set_hl(0, "PRHint", { fg = "#6c7086", bg = "NONE" })
-        vim.api.nvim_buf_set_extmark(bufnr, hunk_hints_ns_id, line_idx, 0, {
-          virt_text = { { hint_text, "PRHint" } },
-          virt_text_pos = "eol",
-        })
-      end
+      -- Create custom highlight group for hints with dimmed text
+      -- Use Comment highlight for a dimmed, less prominent color
+      -- Background is transparent (NONE) so it inherits from the current line
+      vim.api.nvim_set_hl(0, "PRHint", { link = "Comment" })
+      vim.api.nvim_buf_set_extmark(bufnr, hunk_hints_ns_id, line_idx, 0, {
+        virt_text = { { hint_text, "PRHint" } },
+        virt_text_pos = "eol",
+      })
     end
   end
 end
@@ -2321,6 +2313,55 @@ function M.request_changes()
           end
         end)
       end
+    end)
+  end)
+end
+
+function M.submit_pending_comments()
+  local pr_number = vim.g.pr_review_number
+  if not pr_number then
+    vim.notify("Not in review mode", vim.log.levels.WARN)
+    return
+  end
+
+  -- Get local pending comments
+  local pending_comments = get_local_pending_comments_for_pr(pr_number)
+
+  if not pending_comments or #pending_comments == 0 then
+    vim.notify("No pending comments to submit", vim.log.levels.INFO)
+    return
+  end
+
+  -- Show preview of pending comments
+  show_pending_comments_preview(pending_comments, function(proceed)
+    if not proceed then
+      vim.notify("Submission cancelled", vim.log.levels.INFO)
+      return
+    end
+
+    input_multiline("Optional comment for review (can be empty)", function(body)
+      vim.notify(string.format("Submitting %d pending comment(s)...", #pending_comments), vim.log.levels.INFO)
+
+      -- Submit review with COMMENT event (not APPROVE or REQUEST_CHANGES)
+      github.submit_review_with_comments(pr_number, "COMMENT", body or "", pending_comments, function(ok, err)
+        if ok then
+          -- Clear local pending comments after successful submission
+          M._local_pending_comments[pr_number] = nil
+          save_session()
+
+          -- Reload all open buffers to remove PENDING markers
+          for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+            if vim.api.nvim_buf_is_valid(buf) and M._buffer_comments[buf] then
+              M.load_comments_for_buffer(buf, true)
+            end
+          end
+
+          vim.notify(string.format("✅ Submitted %d comment(s) successfully!", #pending_comments),
+            vim.log.levels.INFO)
+        else
+          vim.notify("❌ Failed to submit comments: " .. (err or "unknown"), vim.log.levels.ERROR)
+        end
+      end)
     end)
   end)
 end
@@ -4115,6 +4156,10 @@ function M.setup(opts)
     M.add_pending_comment()
   end, { desc = "Add a pending review comment (posted with approval/rejection)" })
 
+  vim.api.nvim_create_user_command("PRSubmitPendingComments", function()
+    M.submit_pending_comments()
+  end, { desc = "Submit all pending comments as a review (without approving/rejecting)" })
+
   vim.api.nvim_create_user_command("PRListPendingComments", function()
     M.list_pending_comments()
   end, { desc = "List all pending comments and navigate to selected one" })
@@ -4588,33 +4633,41 @@ local function show_menu_window(sections)
   vim.wo[win_id].relativenumber = false
   vim.wo[win_id].signcolumn = "no"
 
-  -- Hide cursor by making it invisible with winhighlight
-  vim.api.nvim_set_hl(0, "MenuCursorHidden", { blend = 100 })
-  vim.wo[win_id].winhighlight = "Cursor:MenuCursorHidden,lCursor:MenuCursorHidden,TermCursor:MenuCursorHidden,TermCursorNC:MenuCursorHidden"
+  -- Save original cursor highlights and make cursor invisible
+  local original_cursor = vim.api.nvim_get_hl(0, { name = "Cursor" })
+  local original_lcursor = vim.api.nvim_get_hl(0, { name = "lCursor" })
+  local original_termcursor = vim.api.nvim_get_hl(0, { name = "TermCursor" })
 
-  -- Also hide cursor with guicursor when entering this window
-  local saved_guicursor = vim.o.guicursor
-  vim.api.nvim_create_autocmd("WinEnter", {
-    callback = function()
-      if vim.api.nvim_get_current_win() == win_id then
-        vim.o.guicursor = "a:ver1"  -- 1-pixel vertical cursor (almost invisible)
-      end
-    end,
-  })
-  vim.api.nvim_create_autocmd("WinLeave", {
-    callback = function()
-      if vim.api.nvim_get_current_win() == win_id then
-        vim.o.guicursor = saved_guicursor
-      end
-    end,
-  })
+  -- Preserve original colors and add blend=100 to make cursor invisible
+  local cursor_invisible = vim.tbl_extend("force", original_cursor, { blend = 100 })
+  local lcursor_invisible = vim.tbl_extend("force", original_lcursor, { blend = 100 })
+  local termcursor_invisible = vim.tbl_extend("force", original_termcursor, { blend = 100 })
+
+  vim.api.nvim_set_hl(0, "Cursor", cursor_invisible)
+  vim.api.nvim_set_hl(0, "lCursor", lcursor_invisible)
+  vim.api.nvim_set_hl(0, "TermCursor", termcursor_invisible)
+
+  -- Function to restore cursor highlights
+  local function restore_cursor()
+    vim.api.nvim_set_hl(0, "Cursor", original_cursor)
+    vim.api.nvim_set_hl(0, "lCursor", original_lcursor)
+    vim.api.nvim_set_hl(0, "TermCursor", original_termcursor)
+  end
 
   -- Setup keymaps for the menu buffer
   local function close_menu()
+    restore_cursor()
     if vim.api.nvim_win_is_valid(win_id) then
       vim.api.nvim_win_close(win_id, true)
     end
   end
+
+  -- Add autocmds to restore cursor when leaving the menu
+  vim.api.nvim_create_autocmd({ "WinLeave", "BufLeave" }, {
+    buffer = bufnr,
+    once = false,
+    callback = restore_cursor,
+  })
 
   -- Close with q and Esc
   vim.keymap.set("n", "q", close_menu, { buffer = bufnr, silent = true, nowait = true })
@@ -4687,13 +4740,14 @@ function M.show_review_menu()
       {
         title = "Comments",
         items = {
-          { key = "l", desc = "Add Line Comment",    cmd = function() M.add_review_comment() end },
-          { key = "p", desc = "Add Pending Comment", cmd = function() M.add_pending_comment() end },
-          { key = "v", desc = "List All Comments",   cmd = function() M.list_all_comments() end },
-          { key = "g", desc = "Global PR Comments",  cmd = function() M.list_global_comments() end },
-          { key = "r", desc = "Reply to Comment",    cmd = function() M.reply_to_comment() end },
-          { key = "m", desc = "Edit My Comment",     cmd = function() M.edit_my_comment() end },
-          { key = "d", desc = "Delete Comment",      cmd = function() M.delete_my_comment() end },
+          { key = "l", desc = "Add Line Comment",       cmd = function() M.add_review_comment() end },
+          { key = "p", desc = "Add Pending Comment",    cmd = function() M.add_pending_comment() end },
+          { key = "s", desc = "Submit Pending Comments", cmd = function() M.submit_pending_comments() end },
+          { key = "v", desc = "List All Comments",      cmd = function() M.list_all_comments() end },
+          { key = "g", desc = "Global PR Comments",     cmd = function() M.list_global_comments() end },
+          { key = "r", desc = "Reply to Comment",       cmd = function() M.reply_to_comment() end },
+          { key = "m", desc = "Edit My Comment",        cmd = function() M.edit_my_comment() end },
+          { key = "d", desc = "Delete Comment",         cmd = function() M.delete_my_comment() end },
         }
       },
     }
