@@ -511,7 +511,7 @@ local function load_inline_diff_for_buffer(bufnr)
   end
 
   -- Don't show inline diff for new files (entire file would be green)
-  if status == "A" then
+  if status == "A" or status == "N" then
     return
   end
 
@@ -561,6 +561,7 @@ end
 
 -- Create split diff view (side by side)
 local function create_split_view(current_bufnr, file_path)
+
   -- Make sure we're in the file window, not the review window
   local current_win = vim.api.nvim_get_current_win()
 
@@ -648,14 +649,16 @@ local function create_split_view(current_bufnr, file_path)
   -- Don't reload the file - it already has the PR changes (unstaged modifications)
   -- Reloading with edit! would reset it to the committed version
 
-  -- Clear inline diff from the current buffer (we don't need it in split view)
+  -- Clear inline diff and change indicators from the current buffer (we don't need them in split view)
   vim.api.nvim_buf_clear_namespace(current_bufnr, diff_ns_id, 0, -1)
+  vim.api.nvim_buf_clear_namespace(current_bufnr, changes_ns_id, 0, -1)
 
   -- Enable diff mode in both windows
   vim.api.nvim_win_call(left_win, function()
     vim.cmd("diffthis")
     vim.wo.foldenable = false -- Disable folding
   end)
+
   vim.api.nvim_win_call(right_win, function()
     vim.cmd("diffthis")
     vim.wo.foldenable = false -- Disable folding
@@ -720,6 +723,9 @@ local function restore_unified_view()
 
   -- Clear state
   M._split_view_state = {}
+
+  -- Reset mode to unified (this is critical!)
+  M._diff_view_mode = "unified"
 end
 
 -- Toggle between unified and split diff view
@@ -746,6 +752,55 @@ function M.toggle_diff_view()
     M._diff_view_mode = "unified"
     restore_unified_view(bufnr)
   end
+end
+
+function M.fix_vsplit()
+  if not vim.g.pr_review_number then
+    vim.notify("Not in PR review mode", vim.log.levels.WARN)
+    return
+  end
+
+  if M._diff_view_mode ~= "split" then
+    vim.notify("Not in split view mode", vim.log.levels.WARN)
+    return
+  end
+
+  local current_bufnr = vim.api.nvim_get_current_buf()
+  local buf_name = vim.api.nvim_buf_get_name(current_bufnr)
+
+  -- If we're in the base buffer ([BEFORE]), we need to find the actual file buffer
+  if buf_name:match("^%[BEFORE%]") then
+    if M._split_view_state and M._split_view_state.current_buf then
+      current_bufnr = M._split_view_state.current_buf
+    else
+      vim.notify("ERROR: In [BEFORE] buffer but no split state found", vim.log.levels.ERROR)
+      return
+    end
+  end
+
+  -- Restore to unified view (this closes the split and cleans up)
+  restore_unified_view()
+
+  -- Clean up diff state and reload the file
+  local file_path = vim.api.nvim_buf_get_name(current_bufnr)
+  if file_path and file_path ~= "" then
+    -- Turn off diff mode completely to clear any stale diff state
+    vim.cmd("diffoff!")
+
+    -- Clear all possible namespaces that might have stale highlights
+    local bufnr = vim.api.nvim_get_current_buf()
+    vim.api.nvim_buf_clear_namespace(bufnr, -1, 0, -1)  -- -1 = all namespaces
+
+    -- Reload the file to clear internal Vim state
+    vim.cmd("edit " .. vim.fn.fnameescape(file_path))
+  end
+
+  -- Use defer_fn with 50ms delay (same as C-h/C-l navigation)
+  -- This gives Vim time to fully process the file reload before creating the split
+  vim.defer_fn(function()
+    M._diff_view_mode = "unified"
+    M.toggle_diff_view()
+  end, 50)
 end
 
 local function close_float_wins()
@@ -1856,9 +1911,9 @@ local function load_changes_for_buffer(bufnr)
 
       vim.api.nvim_buf_clear_namespace(bufnr, changes_ns_id, 0, -1)
 
-      -- Don't show change indicators for completely new files (status "A")
+      -- Don't show change indicators for completely new files (status "A" or "N")
       -- Since everything is new, showing all lines as changed is not helpful
-      if status ~= "A" then
+      if status ~= "A" and status ~= "N" then
         for _, line in ipairs(lines) do
           local line_idx = line - 1
           if line_idx >= 0 and line_idx < vim.api.nvim_buf_line_count(bufnr) then
@@ -4266,11 +4321,40 @@ function M.setup(opts)
     group = augroup,
     callback = function(args)
       if vim.g.pr_review_number then
+
         M.load_comments_for_buffer(args.buf)
-        load_changes_for_buffer(args.buf)
-        -- Don't load inline diff when in split view mode
+
+        -- Don't load changes OR inline diff when in split view mode
+        -- Diff mode handles all highlighting
         if M._diff_view_mode ~= "split" then
+          load_changes_for_buffer(args.buf)
           load_inline_diff_for_buffer(args.buf)
+        else
+          -- Auto-fix split when buffer is changed manually (not from our navigation)
+          -- This fixes the issue when user switches buffers with :b or fzf
+          if not M._opening_file then  -- Don't interfere with our own navigation
+            local buf_name = vim.api.nvim_buf_get_name(args.buf)
+            -- Only auto-fix for regular files (not [BEFORE] buffers)
+            if not buf_name:match("^%[BEFORE%]") then
+              -- Check if we have a split state that doesn't match current buffer
+              if M._split_view_state and M._split_view_state.current_buf then
+                -- Only auto-fix if the split state is for a different buffer
+                if M._split_view_state.current_buf ~= args.buf then
+                  -- Check if this file is part of the PR changes
+                  local file_path = get_relative_path(args.buf)
+                  if file_path then
+                    -- Schedule the fix to avoid interfering with BufEnter processing
+                    vim.defer_fn(function()
+                      -- Double-check we're still in split mode and on the same buffer
+                      if M._diff_view_mode == "split" and vim.api.nvim_get_current_buf() == args.buf then
+                        M.fix_vsplit()
+                      end
+                    end, 100)
+                  end
+                end
+              end
+            end
+          end
         end
 
         -- Update review buffer to highlight current file
