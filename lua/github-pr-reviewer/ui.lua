@@ -368,12 +368,8 @@ end
 
 -- All comments picker functions (with preview)
 local function format_all_comment(comment)
-  local status = comment.is_local and "[PENDING]" or "[Posted]"
-  local preview = comment.body:gsub("\n", " "):sub(1, 50)
-  if #comment.body > 50 then
-    preview = preview .. "..."
-  end
-  return string.format("%s %s [%s:%d] %s: %s", status, comment.path, comment.path, comment.line, comment.user, preview)
+  local status = comment.is_local and "[Pending]" or "[Posted]"
+  return string.format("%s %s", status, comment.path)
 end
 
 local function select_all_comments_native(comments, callback)
@@ -408,52 +404,44 @@ local function select_all_comments_fzf(comments, callback)
     return
   end
 
-  -- Write comments to a temp file for the preview script to read
-  local temp_file = vim.fn.tempname()
-  local comments_json = vim.fn.json_encode(comments)
-  vim.fn.writefile({comments_json}, temp_file)
+  -- Create a temp directory for comment files
+  local temp_dir = vim.fn.tempname()
+  vim.fn.mkdir(temp_dir, "p")
+
+  -- Write each comment to a separate file
+  local temp_files = {}
+  for i, comment in ipairs(comments) do
+    local temp_file = temp_dir .. "/comment_" .. i .. ".txt"
+    local status = comment.is_local and "[Pending]" or "[Posted]"
+    local lines = {}
+    table.insert(lines, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    table.insert(lines, string.format("%s %s:%d", status, comment.path, comment.line))
+    table.insert(lines, string.format("Author: %s", comment.user))
+    if comment.created_at and comment.created_at ~= "" then
+      table.insert(lines, string.format("Date: %s", comment.created_at))
+    end
+    table.insert(lines, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    table.insert(lines, "")
+    table.insert(lines, comment.body)
+
+    vim.fn.writefile(lines, temp_file)
+    table.insert(temp_files, temp_file)
+  end
 
   -- Create entries with index
   local entries = {}
   for i, comment in ipairs(comments) do
-    local status = comment.is_local and "[PENDING]" or "[Posted]"
-    local preview = comment.body:gsub("\n", " "):sub(1, 50)
-    if #comment.body > 50 then
-      preview = preview .. "..."
-    end
-    local entry = string.format("%d|%s %s [%s:%d] %s: %s",
-      i, status, comment.path, comment.path, comment.line, comment.user, preview)
+    local status = comment.is_local and "[Pending]" or "[Posted]"
+    local entry = string.format("%d|%s %s", i, status, comment.path)
     table.insert(entries, entry)
   end
 
-  -- Create preview script
-  local cwd = vim.fn.getcwd()
+  -- Create preview command
   local preview_cmd = string.format([[
     idx=$(echo {} | cut -d'|' -f1)
     if [ -z "$idx" ]; then echo "No preview"; exit 0; fi
-
-    # Get comment info from temp file
-    path=$(echo {} | cut -d'|' -f2- | sed -E 's/.*\[([^:]+):([0-9]+)\].*/\1/')
-    line=$(echo {} | cut -d'|' -f2- | sed -E 's/.*\[([^:]+):([0-9]+)\].*/\2/')
-
-    filepath="%s/$path"
-
-    if [ ! -f "$filepath" ]; then
-      echo "File not found: $path"
-      exit 0
-    fi
-
-    # Show file with bat or cat
-    if command -v bat >/dev/null 2>&1; then
-      start=$((line > 10 ? line - 10 : 1))
-      end=$((line + 10))
-      bat --style=numbers --color=always --highlight-line "$line" --line-range "$start:$end" "$filepath" 2>/dev/null
-    else
-      start=$((line > 10 ? line - 10 : 1))
-      end=$((line + 10))
-      sed -n "${start},${end}p" "$filepath" | cat -n | sed "${line}s/^/>>> /"
-    fi
-  ]], cwd)
+    cat "%s/comment_${idx}.txt" 2>/dev/null || echo "Preview not available"
+  ]], temp_dir)
 
   fzf.fzf_exec(entries, {
     prompt = "Comments> ",
@@ -471,8 +459,8 @@ local function select_all_comments_fzf(comments, callback)
             callback(comments[idx])
           end
         end
-        -- Clean up temp file
-        vim.fn.delete(temp_file)
+        -- Clean up temp files
+        vim.fn.delete(temp_dir, "rf")
       end,
     },
   })
@@ -515,65 +503,29 @@ local function select_all_comments_telescope(comments, callback)
       }),
       sorter = conf.generic_sorter({}),
       previewer = previewers.new_buffer_previewer({
-        title = "File Preview",
+        title = "Comment Preview",
         define_preview = function(self, entry)
           local comment = entry.value
 
-          -- Try to get file content from buffer or read from disk
-          local file_lines = {}
-          local file_path_full = comment.path
+          -- Show comment info
+          local lines = {}
+          local status = comment.is_local and "[Pending]" or "[Posted]"
+          table.insert(lines, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+          table.insert(lines, string.format("%s %s:%d", status, comment.path, comment.line))
+          table.insert(lines, string.format("Author: %s", comment.user))
+          if comment.created_at and comment.created_at ~= "" then
+            table.insert(lines, string.format("Date: %s", comment.created_at))
+          end
+          table.insert(lines, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+          table.insert(lines, "")
 
-          -- Try to find the full path
-          if comment.bufnr and vim.api.nvim_buf_is_valid(comment.bufnr) then
-            file_path_full = vim.api.nvim_buf_get_name(comment.bufnr)
-            file_lines = vim.api.nvim_buf_get_lines(comment.bufnr, 0, -1, false)
-          else
-            -- Try to read from disk
-            local cwd = vim.fn.getcwd()
-            local full_path = cwd .. "/" .. comment.path
-
-            -- Check if file exists
-            if vim.fn.filereadable(full_path) == 1 then
-              file_lines = vim.fn.readfile(full_path)
-              file_path_full = full_path
-            end
+          -- Add comment body
+          for line in comment.body:gmatch("[^\r\n]+") do
+            table.insert(lines, line)
           end
 
-          if #file_lines > 0 then
-            -- Show file content
-            vim.api.nvim_buf_set_lines(self.state.bufnr, 0, -1, false, file_lines)
-
-            -- Detect and set filetype
-            local ft = vim.filetype.match({ filename = file_path_full }) or ""
-            vim.bo[self.state.bufnr].filetype = ft
-
-            -- Highlight the comment line
-            if comment.line <= #file_lines then
-              vim.api.nvim_buf_add_highlight(self.state.bufnr, -1, "Visual", comment.line - 1, 0, -1)
-            end
-
-            -- Add virtual text showing comment info
-            local ns = vim.api.nvim_create_namespace("pr_comment_preview")
-            if comment.line <= #file_lines then
-              vim.api.nvim_buf_set_extmark(self.state.bufnr, ns, comment.line - 1, 0, {
-                virt_text = {{string.format(" 💬 %s: %s", comment.user, comment.body:gsub("\n", " "):sub(1, 60)), "Comment"}},
-                virt_text_pos = "eol",
-              })
-            end
-          else
-            -- Fallback: show comment info if file cannot be loaded
-            local lines = {}
-            table.insert(lines, string.format("File: %s:%d", comment.path, comment.line))
-            table.insert(lines, string.format("Author: %s", comment.user))
-            table.insert(lines, string.format("Status: %s", comment.is_local and "PENDING" or "Posted"))
-            table.insert(lines, "")
-            table.insert(lines, "--- Comment ---")
-            for line in comment.body:gmatch("[^\r\n]+") do
-              table.insert(lines, line)
-            end
-            vim.api.nvim_buf_set_lines(self.state.bufnr, 0, -1, false, lines)
-            vim.bo[self.state.bufnr].filetype = "markdown"
-          end
+          vim.api.nvim_buf_set_lines(self.state.bufnr, 0, -1, false, lines)
+          vim.bo[self.state.bufnr].filetype = "markdown"
         end,
       }),
       attach_mappings = function(prompt_bufnr, _)
