@@ -379,46 +379,106 @@ end
 
 -- Fetch global/issue comments (not line-specific comments)
 function M.fetch_pr_global_comments(pr_number, callback)
-  local cmd = string.format(
-    "gh api repos/{owner}/{repo}/issues/%d/comments --jq '.[] | {id: .id, body: .body, user: .user.login, created_at: .created_at}'",
+  -- First, fetch issue comments
+  local cmd_comments = string.format(
+    "gh api repos/{owner}/{repo}/issues/%d/comments --jq '.[] | {id: .id, body: .body, user: .user.login, created_at: .created_at, type: \"comment\"}'",
     pr_number
   )
 
-  vim.fn.jobstart(cmd, {
+  -- Also fetch PR reviews (approvals, rejections, etc)
+  local cmd_reviews = string.format(
+    "gh api repos/{owner}/{repo}/pulls/%d/reviews --jq '.[] | {id: .id, body: .body, user: .user.login, created_at: .submitted_at, state: .state, type: \"review\"}'",
+    pr_number
+  )
+
+  local all_comments = {}
+  local completed = 0
+  local total = 2
+
+  local function check_complete()
+    completed = completed + 1
+    if completed == total then
+      -- Sort by date
+      table.sort(all_comments, function(a, b)
+        return a.created_at < b.created_at
+      end)
+
+      vim.schedule(function()
+        callback(all_comments, nil)
+      end)
+    end
+  end
+
+  -- Fetch issue comments
+  vim.fn.jobstart(cmd_comments, {
     stdout_buffered = true,
     on_stdout = function(_, data)
-      if not data or #data == 0 or (data[1] == "" and #data == 1) then
-        vim.schedule(function()
-          callback({}, nil)
-        end)
-        return
-      end
-
-      local comments = {}
-      for _, line in ipairs(data) do
-        if line and line ~= "" then
-          local ok, comment = pcall(vim.fn.json_decode, line)
-          if ok and comment then
-            table.insert(comments, {
-              id = comment.id,
-              body = comment.body,
-              user = comment.user,
-              created_at = comment.created_at,
-            })
+      if data and #data > 0 and not (data[1] == "" and #data == 1) then
+        for _, line in ipairs(data) do
+          if line and line ~= "" then
+            local ok, comment = pcall(vim.fn.json_decode, line)
+            if ok and comment then
+              table.insert(all_comments, {
+                id = comment.id,
+                body = comment.body,
+                user = comment.user,
+                created_at = comment.created_at,
+                type = "comment",
+              })
+            end
           end
         end
       end
-
-      vim.schedule(function()
-        callback(comments, nil)
-      end)
     end,
-    on_stderr = function(_, data)
-      if data and data[1] and data[1] ~= "" then
-        vim.schedule(function()
-          callback({}, table.concat(data, "\n"))
-        end)
+    on_exit = function()
+      check_complete()
+    end,
+  })
+
+  -- Fetch PR reviews
+  vim.fn.jobstart(cmd_reviews, {
+    stdout_buffered = true,
+    on_stdout = function(_, data)
+      if data and #data > 0 and not (data[1] == "" and #data == 1) then
+        for _, line in ipairs(data) do
+          if line and line ~= "" then
+            local ok, review = pcall(vim.fn.json_decode, line)
+            if ok and review then
+              -- Format state nicely
+              local state_text = ""
+              if review.state == "APPROVED" then
+                state_text = "✅ Approved this pull request"
+              elseif review.state == "CHANGES_REQUESTED" then
+                state_text = "❌ Requested changes"
+              elseif review.state == "COMMENTED" then
+                state_text = "💬 Reviewed"
+              elseif review.state == "DISMISSED" then
+                state_text = "🚫 Review dismissed"
+              else
+                state_text = review.state
+              end
+
+              -- Combine state and body
+              local full_body = state_text
+              if review.body and review.body ~= "" and review.body ~= vim.NIL then
+                full_body = state_text .. "\n\n" .. review.body
+              end
+
+              table.insert(all_comments, {
+                id = review.id,
+                body = full_body,
+                user = review.user,
+                created_at = review.created_at or review.submitted_at,
+                type = "review",
+                state = review.state,
+              })
+            end
+          end
+        end
       end
+    end,
+    on_exit = function()
+      check_complete()
     end,
   })
 end
