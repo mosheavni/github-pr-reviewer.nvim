@@ -657,7 +657,7 @@ If `bat` is not available, the plugin falls back to `cat`.
 
 MIT License
 
-Copyright (c) 2024 Otávio Schwanck dos Santos
+Copyright (c) 2025 Otávio Schwanck dos Santos
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to
