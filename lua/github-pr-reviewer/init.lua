@@ -1862,20 +1862,33 @@ local function update_hunk_navigation_hints()
   if hint_text ~= "" then
     local line_idx = cursor_line - 1
     if line_idx >= 0 and line_idx < vim.api.nvim_buf_line_count(bufnr) then
-      -- Get the background color from the current line's highlight
-      -- Check all extmarks on this line to find the line highlight
-      local extmarks = vim.api.nvim_buf_get_extmarks(bufnr, diff_ns_id, { line_idx, 0 }, { line_idx, -1 }, { details = true })
-
       local line_bg = nil
-      for _, mark in ipairs(extmarks) do
-        local details = mark[4]
-        if details and details.line_hl_group then
-          -- Get the background from the line highlight group
-          local hl = vim.api.nvim_get_hl(0, { name = details.line_hl_group, link = false })
-          if hl.bg then
+
+      -- In split mode, use vim's diff highlight groups
+      if M._diff_view_mode == "split" then
+        -- Get the diff highlight from vim's native diff mode
+        local diff_hl = vim.fn.diff_hlID(cursor_line, 1)
+        if diff_hl > 0 then
+          local hl_name = vim.fn.synIDattr(diff_hl, "name")
+          if hl_name and hl_name ~= "" then
+            local hl = vim.api.nvim_get_hl(0, { name = hl_name, link = false })
             line_bg = hl.bg
           end
-          break
+        end
+      else
+        -- In unified mode, check extmarks for line highlight
+        local extmarks = vim.api.nvim_buf_get_extmarks(bufnr, diff_ns_id, { line_idx, 0 }, { line_idx, -1 }, { details = true })
+
+        for _, mark in ipairs(extmarks) do
+          local details = mark[4]
+          if details and details.line_hl_group then
+            -- Get the background from the line highlight group
+            local hl = vim.api.nvim_get_hl(0, { name = details.line_hl_group, link = false })
+            if hl.bg then
+              line_bg = hl.bg
+            end
+            break
+          end
         end
       end
 
@@ -2017,8 +2030,48 @@ local function display_comments(bufnr, comments)
         end
       end
 
+      -- Get background color from the current line's highlight
+      local line_bg = nil
+
+      -- Check if in split mode
+      if M._diff_view_mode == "split" then
+        -- Get the diff highlight from vim's native diff mode
+        local diff_hl = vim.fn.diff_hlID(line, 1)
+        if diff_hl > 0 then
+          local hl_name = vim.fn.synIDattr(diff_hl, "name")
+          if hl_name and hl_name ~= "" then
+            local hl = vim.api.nvim_get_hl(0, { name = hl_name, link = false })
+            line_bg = hl.bg
+          end
+        end
+      else
+        -- In unified mode, check extmarks for line highlight
+        local extmarks = vim.api.nvim_buf_get_extmarks(bufnr, diff_ns_id, { line_idx, 0 }, { line_idx, -1 }, { details = true })
+
+        for _, mark in ipairs(extmarks) do
+          local details = mark[4]
+          if details and details.line_hl_group then
+            local hl = vim.api.nvim_get_hl(0, { name = details.line_hl_group, link = false })
+            if hl.bg then
+              line_bg = hl.bg
+            end
+            break
+          end
+        end
+      end
+
+      -- Create custom highlight group for comment indicator
+      local base_hl_name = has_pending and "DiagnosticWarn" or "DiagnosticInfo"
+      local custom_hl_name = has_pending and "PRCommentPending" or "PRCommentInfo"
+      local base_hl = vim.api.nvim_get_hl(0, { name = base_hl_name, link = false })
+
+      vim.api.nvim_set_hl(0, custom_hl_name, {
+        fg = base_hl.fg,
+        bg = line_bg, -- Use the line's background (or nil for transparent)
+      })
+
       vim.api.nvim_buf_set_extmark(bufnr, ns_id, line_idx, 0, {
-        virt_text = { { text, has_pending and "DiagnosticWarn" or "DiagnosticInfo" } },
+        virt_text = { { text, custom_hl_name } },
         virt_text_pos = "eol",
       })
     end
