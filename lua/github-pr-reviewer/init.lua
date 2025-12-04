@@ -1856,7 +1856,7 @@ local function update_hunk_navigation_hints()
                          cursor_line <= hunks[current_hunk_idx].end_line
 
   if cursor_in_hunk and #hunks > 1 then
-    hint_text = string.format("  %d/%d", current_hunk_idx, #hunks)
+    hint_text = string.format("  (%d/%d)", current_hunk_idx, #hunks)
   end
 
   if hint_text ~= "" then
