@@ -3,10 +3,10 @@ local M = {}
 M._comments_cache = {}
 
 -- Debug logging helper
-local function debug_log(msg)
+local function debug_log(msg, level)
   local pr_reviewer = require("github-pr-reviewer")
   if pr_reviewer.config.debug then
-    vim.notify(msg, vim.log.levels.INFO)
+    vim.notify(msg, level or vim.log.levels.INFO)
   end
 end
 
@@ -479,7 +479,7 @@ function M.fetch_pr_global_comments(pr_number, callback)
             local ok, review = pcall(vim.fn.json_decode, line)
             if ok and review then
               -- Format state nicely
-              local state_text = ""
+              local state_text
               if review.state == "APPROVED" then
                 state_text = "✅ Approved this pull request"
               elseif review.state == "CHANGES_REQUESTED" then
@@ -1042,7 +1042,7 @@ function M.add_pending_review_comment(pr_number, path, line, body, callback)
             end)
 
             -- Get existing comments from the pending review
-            M.get_pending_review_comments(pr_number, function(existing_comments, err)
+            M.get_pending_review_comments(pr_number, function(existing_comments)
               vim.schedule(function()
                 debug_log(string.format("Debug: Found %d existing pending comments", #(existing_comments or {})))
               end)
@@ -1189,7 +1189,7 @@ function M.get_pending_review_comments(pr_number, callback)
                         tostring(comment.original_line),
                         tostring(comment.start_line),
                         tostring(comment.position),
-                        tostring(comment.original_position)), vim.log.levels.INFO)
+                        tostring(comment.original_position)))
                     end)
 
                     table.insert(all_comments, {

@@ -1,0 +1,6 @@
+[config]
+std = "lua51+vim"
+
+[rules]
+# Allow unused variables starting with underscore
+unused_variable = { allow_unused_underscore = true }

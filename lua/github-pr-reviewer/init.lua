@@ -444,7 +444,7 @@ get_inline_diff = function(file_path, status, callback)
 end
 
 -- Helper to get syntax-highlighted chunks for a line
-local function get_syntax_highlights(text, filetype)
+local function get_syntax_highlights(text, _)
   -- Simply return text with DiffDelete highlight, preserving indentation
   -- Note: Syntax highlighting for deleted lines was removed due to severe performance issues
   -- (vim.inspect_pos() for every character was extremely slow)
@@ -764,7 +764,7 @@ function M.toggle_diff_view()
   else
     -- Switch back to unified view
     M._diff_view_mode = "unified"
-    restore_unified_view(bufnr)
+    restore_unified_view()
   end
 end
 
@@ -906,11 +906,15 @@ local function render_review_buffer()
   -- Filter files based on current filter
   local filtered_files = {}
   for _, file in ipairs(M._review_files) do
+    local include = false
     if M._review_filter == "all" then
-      table.insert(filtered_files, file)
-    elseif M._review_filter == "viewed" and file.viewed then
-      table.insert(filtered_files, file)
-    elseif M._review_filter == "not_viewed" and not file.viewed then
+      include = true
+    elseif M._review_filter == "viewed" then
+      include = file.viewed
+    elseif M._review_filter == "not_viewed" then
+      include = not file.viewed
+    end
+    if include then
       table.insert(filtered_files, file)
     end
   end
@@ -1050,10 +1054,16 @@ local function render_review_buffer()
   for _, hl in ipairs(highlights) do
     if hl.start_col and hl.end_col then
       -- Highlight specific range (for file name)
-      vim.api.nvim_buf_add_highlight(M._review_buffer, ns, hl.hl_group, hl.line, hl.start_col, hl.end_col)
+      vim.api.nvim_buf_set_extmark(M._review_buffer, ns, hl.line, hl.start_col, {
+        end_col = hl.end_col,
+        hl_group = hl.hl_group,
+      })
     else
       -- Highlight entire line
-      vim.api.nvim_buf_add_highlight(M._review_buffer, ns, hl.hl_group, hl.line, 0, -1)
+      vim.api.nvim_buf_set_extmark(M._review_buffer, ns, hl.line, 0, {
+        hl_eol = true,
+        hl_group = hl.hl_group,
+      })
     end
   end
 
@@ -1323,7 +1333,7 @@ function M.open_review_buffer(callback)
     M._review_buffer = vim.api.nvim_create_buf(false, true)
 
     -- Try to set name, if it fails (buffer already exists), wipe the old one
-    local success, err = pcall(vim.api.nvim_buf_set_name, M._review_buffer, "PR Review")
+    local success = pcall(vim.api.nvim_buf_set_name, M._review_buffer, "PR Review")
     if not success then
       -- Find and delete the existing buffer with this name
       for _, buf in ipairs(vim.api.nvim_list_bufs()) do
@@ -1372,16 +1382,16 @@ function M.open_review_buffer(callback)
     vim.cmd(win_cmd)
     M._review_window = vim.api.nvim_get_current_win()
     vim.api.nvim_win_set_buf(M._review_window, M._review_buffer)
-    vim.api.nvim_win_set_option(M._review_window, "number", false)
-    vim.api.nvim_win_set_option(M._review_window, "relativenumber", false)
-    vim.api.nvim_win_set_option(M._review_window, "signcolumn", "no")
-    vim.api.nvim_win_set_option(M._review_window, "wrap", false)
+    vim.wo[M._review_window].number = false
+    vim.wo[M._review_window].relativenumber = false
+    vim.wo[M._review_window].signcolumn = "no"
+    vim.wo[M._review_window].wrap = false
 
     -- Fix window size (width for left/right, height for top/bottom)
     if cfg.position == "left" or cfg.position == "right" then
-      vim.api.nvim_win_set_option(M._review_window, "winfixwidth", true)
+      vim.wo[M._review_window].winfixwidth = true
     else
-      vim.api.nvim_win_set_option(M._review_window, "winfixheight", true)
+      vim.wo[M._review_window].winfixheight = true
     end
 
     -- Return to previous window
@@ -2334,7 +2344,7 @@ local function refresh_comment_float()
 end
 
 -- Helper function to select emoji and add/remove reaction
-local function select_and_add_reaction(pr_number, comment, bufnr)
+local function select_and_add_reaction(_, comment, bufnr)
   -- First, get current user to check if they already reacted
   github.get_current_user(function(current_user, err)
     if err or not current_user then
@@ -2394,7 +2404,7 @@ local function select_and_add_reaction(pr_number, comment, bufnr)
 end
 
 -- Add emoji reaction to a global comment (doesn't require buffer context)
-local function select_and_add_reaction_to_global_comment(pr_number, comment)
+local function select_and_add_reaction_to_global_comment(_, comment)
   -- First, get current user to check if they already reacted
   github.get_current_user(function(current_user, err)
     if err or not current_user then
@@ -2792,8 +2802,8 @@ local function show_pending_comments_preview(pending_comments, callback)
   local buf = vim.api.nvim_create_buf(false, true)
 
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  vim.api.nvim_buf_set_option(buf, "modifiable", false)
-  vim.api.nvim_buf_set_option(buf, "filetype", "markdown")
+  vim.bo[buf].modifiable = false
+  vim.bo[buf].filetype = "markdown"
 
   local win = vim.api.nvim_open_win(buf, true, {
     relative = "editor",
@@ -3262,11 +3272,17 @@ local function input_comment_with_context(target_comment, all_comments, prompt_t
   vim.bo[buf].modifiable = true
 
   -- Create namespace for highlighting
-  local ns_id = vim.api.nvim_create_namespace("comment_context")
+  local context_ns_id = vim.api.nvim_create_namespace("comment_context")
 
   -- Highlight the separator
-  vim.api.nvim_buf_add_highlight(buf, ns_id, "Comment", separator_line - 1, 0, -1)
-  vim.api.nvim_buf_add_highlight(buf, ns_id, "Title", 0, 0, -1)
+  vim.api.nvim_buf_set_extmark(buf, context_ns_id, separator_line - 1, 0, {
+    hl_eol = true,
+    hl_group = "Comment",
+  })
+  vim.api.nvim_buf_set_extmark(buf, context_ns_id, 0, 0, {
+    hl_eol = true,
+    hl_group = "Title",
+  })
 
   -- Save draft function
   local function save_current_draft()
@@ -3276,7 +3292,7 @@ local function input_comment_with_context(target_comment, all_comments, prompt_t
       -- Extract only the lines after the separator
       local comment_lines = {}
       local found_separator = false
-      for i, line in ipairs(all_lines) do
+      for _, line in ipairs(all_lines) do
         if line:match("^%-%-%-+ Answer here:") then
           found_separator = true
         elseif found_separator and line ~= "" then
@@ -3304,7 +3320,7 @@ local function input_comment_with_context(target_comment, all_comments, prompt_t
     -- Extract only the lines after the separator
     local comment_lines = {}
     local found_separator = false
-    for i, line in ipairs(all_lines) do
+    for _, line in ipairs(all_lines) do
       if line:match("^%-%-%-+ Answer here:") then
         found_separator = true
       elseif found_separator and line ~= "" then
@@ -3359,96 +3375,6 @@ local function input_comment_with_context(target_comment, all_comments, prompt_t
   else
     vim.cmd("startinsert")
   end
-end
-
--- Show thread before adding/editing comment (deprecated - use input_comment_with_context instead)
-local function show_reply_thread(target_comment, all_comments, callback)
-  local buf = vim.api.nvim_create_buf(false, true)
-  local width = math.floor(vim.o.columns * 0.7)
-  local height = math.floor(vim.o.lines * 0.6)
-
-  local win = vim.api.nvim_open_win(buf, true, {
-    relative = "editor",
-    width = width,
-    height = height,
-    col = math.floor((vim.o.columns - width) / 2),
-    row = math.floor((vim.o.lines - height) / 2),
-    style = "minimal",
-    border = "rounded",
-    title = " Conversation Thread (press Enter to continue, Esc to cancel) ",
-    title_pos = "center",
-  })
-
-  -- Build the thread
-  local thread = build_comment_thread(target_comment, all_comments)
-
-  -- Format the thread
-  local lines = {}
-  table.insert(lines, "--- Conversation Thread ---")
-  table.insert(lines, "")
-
-  for _, item in ipairs(thread) do
-    local indent = string.rep("  ", item.depth)
-    local prefix = item.depth > 0 and "↳ " or ""
-
-    -- Add author and date
-    local date = item.comment.created_at or ""
-    if date ~= "" then
-      date = " (" .. date:sub(1, 10) .. ")"
-    end
-
-    -- Add pending indicator if it's a local pending comment
-    local pending_mark = (item.comment.is_pending and item.comment.is_local) and " [PENDING]" or ""
-
-    table.insert(lines, indent .. prefix .. "**" .. item.comment.user .. "**" .. date .. pending_mark .. ":")
-
-    -- Add comment body with word wrap and indent
-    local wrapped = wrap_text(item.comment.body, width - 4, indent)
-    for _, wrapped_line in ipairs(wrapped) do
-      table.insert(lines, wrapped_line)
-    end
-    table.insert(lines, "")
-  end
-
-  table.insert(lines, "")
-  table.insert(lines, "Press Enter to continue or Esc to cancel")
-
-  -- Set the content
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-
-  -- Set buffer options AFTER setting content
-  vim.bo[buf].filetype = "markdown"
-  vim.bo[buf].bufhidden = "wipe"
-  vim.bo[buf].modifiable = false
-
-  -- Create namespace for highlighting
-  local ns_id = vim.api.nvim_create_namespace("thread_preview")
-  vim.api.nvim_buf_add_highlight(buf, ns_id, "Title", 0, 0, -1)
-
-  local function close_and_continue()
-    if vim.api.nvim_win_is_valid(win) then
-      vim.api.nvim_win_close(win, true)
-    end
-    if vim.api.nvim_buf_is_valid(buf) then
-      vim.api.nvim_buf_delete(buf, { force = true })
-    end
-    if callback then
-      callback()
-    end
-  end
-
-  local function close_and_cancel()
-    if vim.api.nvim_win_is_valid(win) then
-      vim.api.nvim_win_close(win, true)
-    end
-    if vim.api.nvim_buf_is_valid(buf) then
-      vim.api.nvim_buf_delete(buf, { force = true })
-    end
-  end
-
-  vim.keymap.set("n", "<CR>", close_and_continue, { buffer = buf, nowait = true })
-  vim.keymap.set("n", "<Esc>", close_and_cancel, { buffer = buf, nowait = true })
-  vim.keymap.set("n", "q", close_and_cancel, { buffer = buf, nowait = true })
 end
 
 local function input_reply_with_context(target_comment, all_comments, callback, draft_info)
@@ -3530,11 +3456,17 @@ local function input_reply_with_context(target_comment, all_comments, callback, 
   vim.bo[buf].modifiable = true
 
   -- Create namespace for highlighting
-  local ns_id = vim.api.nvim_create_namespace("reply_context")
+  local reply_ns_id = vim.api.nvim_create_namespace("reply_context")
 
   -- Highlight the separator
-  vim.api.nvim_buf_add_highlight(buf, ns_id, "Comment", separator_line - 1, 0, -1)
-  vim.api.nvim_buf_add_highlight(buf, ns_id, "Title", 0, 0, -1)
+  vim.api.nvim_buf_set_extmark(buf, reply_ns_id, separator_line - 1, 0, {
+    hl_eol = true,
+    hl_group = "Comment",
+  })
+  vim.api.nvim_buf_set_extmark(buf, reply_ns_id, 0, 0, {
+    hl_eol = true,
+    hl_group = "Title",
+  })
 
   -- Save draft function
   local function save_current_draft()
@@ -3544,7 +3476,7 @@ local function input_reply_with_context(target_comment, all_comments, callback, 
       -- Extract only the lines after the separator
       local reply_lines = {}
       local found_separator = false
-      for i, line in ipairs(all_lines) do
+      for _, line in ipairs(all_lines) do
         if line:match("^%-%-%-+ Answer here:") then
           found_separator = true
         elseif found_separator and line ~= "" then
@@ -3572,7 +3504,7 @@ local function input_reply_with_context(target_comment, all_comments, callback, 
     -- Extract only the lines after the separator
     local reply_lines = {}
     local found_separator = false
-    for i, line in ipairs(all_lines) do
+    for _, line in ipairs(all_lines) do
       if line:match("^%-%-%-+ Answer here:") then
         found_separator = true
       elseif found_separator and line ~= "" then
@@ -3721,7 +3653,7 @@ function M.add_pending_comment_with_selection()
       end
 
       -- Get current user
-      github.get_current_user(function(user, err)
+      github.get_current_user(function(user)
         local username = user or "me"
 
         -- Store the range info in the comment body for later use
@@ -3847,11 +3779,11 @@ function M.add_pending_comment()
         return
       end
       -- Get current user
-      github.get_current_user(function(user, err)
+      github.get_current_user(function(user)
         local username = user or "me"
 
         -- Add comment to local storage
-        local comment = add_local_pending_comment(pr_number, file_path, cursor_line, body, username)
+        add_local_pending_comment(pr_number, file_path, cursor_line, body, username)
 
         -- Save session to persist pending comments
         save_session()
@@ -3877,11 +3809,11 @@ function M.add_pending_comment()
           return
         end
         -- Get current user
-        github.get_current_user(function(user, err)
+        github.get_current_user(function(user)
           local username = user or "me"
 
           -- Add comment to local storage
-          local comment = add_local_pending_comment(pr_number, file_path, cursor_line, body, username)
+          add_local_pending_comment(pr_number, file_path, cursor_line, body, username)
 
           -- Save session to persist pending comments
           save_session()
@@ -3907,7 +3839,7 @@ end
 function M.list_pending_comments()
   -- Collect all pending comments from all PRs
   local all_comments = {}
-  for pr_number, comments in pairs(M._local_pending_comments) do
+  for _, comments in pairs(M._local_pending_comments) do
     for _, comment in ipairs(comments) do
       table.insert(all_comments, comment)
     end
@@ -4205,6 +4137,7 @@ function M.list_global_comments()
             end
 
             -- Extract only the reply part (everything after "## Your Reply:")
+            local reply_text
             local reply_start = full_text:find("## Your Reply:")
             if not reply_start then
               -- Fallback: use the entire text if marker not found
@@ -4450,9 +4383,15 @@ function M.edit_my_comment()
 
         -- Highlight separator if thread was shown
         if separator_line > 0 then
-          local ns_id = vim.api.nvim_create_namespace("edit_context")
-          vim.api.nvim_buf_add_highlight(buf, ns_id, "Comment", separator_line - 1, 0, -1)
-          vim.api.nvim_buf_add_highlight(buf, ns_id, "Title", 0, 0, -1)
+          local edit_ns_id = vim.api.nvim_create_namespace("edit_context")
+          vim.api.nvim_buf_set_extmark(buf, edit_ns_id, separator_line - 1, 0, {
+            hl_eol = true,
+            hl_group = "Comment",
+          })
+          vim.api.nvim_buf_set_extmark(buf, edit_ns_id, 0, 0, {
+            hl_eol = true,
+            hl_group = "Title",
+          })
         end
 
         -- Position cursor at the end of the text
@@ -4466,7 +4405,7 @@ function M.edit_my_comment()
           if separator_line > 0 then
             local edit_lines = {}
             local found_separator = false
-            for i, line in ipairs(new_lines) do
+            for _, line in ipairs(new_lines) do
               if line:match("^%-%-%-+ Edit your comment below:") then
                 found_separator = true
               elseif found_separator and line ~= "" then
@@ -4495,7 +4434,7 @@ function M.edit_my_comment()
             -- Thread was shown, extract only lines after separator
             local edit_lines = {}
             local found_separator = false
-            for i, line in ipairs(new_lines) do
+            for _, line in ipairs(new_lines) do
               if line:match("^%-%-%-+ Edit your comment below:") then
                 found_separator = true
               elseif found_separator and line ~= "" then
@@ -4719,7 +4658,7 @@ function M.show_pr_info()
     end
 
     -- Fetch CI checks in parallel
-    github.get_pr_checks(pr_number, function(checks, checks_err)
+    github.get_pr_checks(pr_number, function(checks)
       -- Continue even if checks fail
       local ci_checks = checks or {}
 
@@ -5101,7 +5040,7 @@ function M._do_start_review(pr)
           vim.notify(string.format("✅ Ready to review PR #%s: %s", pr.number, pr.title), vim.log.levels.INFO)
         end
 
-        git.get_modified_files_with_lines(function(files, hunks)
+        git.get_modified_files_with_lines(function(files)
           if files and #files > 0 then
             vim.g.pr_review_modified_files = vim.tbl_map(function(f)
               return { path = f.path, status = f.status }
@@ -5452,9 +5391,9 @@ function M.review_pr()
       -- For fork PRs, get the correct branch name using gh pr view
       if pr.head_repo_owner then
         debug_log(string.format("Debug: Detected fork PR, owner=%s, getting details...", pr.head_repo_owner))
-        github.get_pr_details(pr.number, function(details, err)
-          if err or not details then
-            vim.notify("Error getting PR details: " .. (err or "unknown"), vim.log.levels.ERROR)
+        github.get_pr_details(pr.number, function(details, details_err)
+          if details_err or not details then
+            vim.notify("Error getting PR details: " .. (details_err or "unknown"), vim.log.levels.ERROR)
             return
           end
 
@@ -5613,36 +5552,6 @@ M._menu_buffer = nil
 M._menu_window = nil
 M._visual_selection = nil -- Store visual selection for comments
 
--- Helper function to get visual selection
-local function get_visual_selection()
-  -- Use marks to get the last visual selection
-  local start_pos = vim.fn.getpos("'<")
-  local end_pos = vim.fn.getpos("'>")
-
-  if start_pos[2] == 0 or end_pos[2] == 0 then
-    return nil
-  end
-
-  local start_line = start_pos[2]
-  local end_line = end_pos[2]
-  local start_col = start_pos[3]
-  local end_col = end_pos[3]
-
-  -- Get the full lines (for suggestion feature, we want complete lines)
-  local lines = vim.api.nvim_buf_get_lines(0, start_line - 1, end_line, false)
-
-  if #lines == 0 then
-    return nil
-  end
-
-  return {
-    text = table.concat(lines, "\n"),
-    full_lines = lines,
-    start_line = start_line,
-    end_line = end_line,
-  }
-end
-
 -- Helper function to show menu window
 local function show_menu_window(sections)
   -- Create new buffer every time to refresh content
@@ -5688,7 +5597,10 @@ local function show_menu_window(sections)
   -- Apply highlights
   local menu_ns = vim.api.nvim_create_namespace("pr_review_menu")
   for _, hl in ipairs(highlights) do
-    vim.api.nvim_buf_add_highlight(bufnr, menu_ns, hl.hl_group, hl.line, hl.col_start, hl.col_end)
+    vim.api.nvim_buf_set_extmark(bufnr, menu_ns, hl.line, hl.col_start, {
+      end_col = hl.col_end,
+      hl_group = hl.hl_group,
+    })
   end
 
   -- Create floating window
@@ -5712,10 +5624,36 @@ local function show_menu_window(sections)
   vim.wo[win_id].relativenumber = false
   vim.wo[win_id].signcolumn = "no"
 
+  -- Helper to convert get_hl result to set_hl format
+  local function hl_to_set_format(hl_info)
+    return {
+      fg = hl_info.fg,
+      bg = hl_info.bg,
+      sp = hl_info.sp,
+      blend = hl_info.blend,
+      bold = hl_info.bold,
+      standout = hl_info.standout,
+      underline = hl_info.underline,
+      undercurl = hl_info.undercurl,
+      underdouble = hl_info.underdouble,
+      underdotted = hl_info.underdotted,
+      underdashed = hl_info.underdashed,
+      strikethrough = hl_info.strikethrough,
+      italic = hl_info.italic,
+      reverse = hl_info.reverse,
+      nocombine = hl_info.nocombine,
+      link = hl_info.link,
+      default = hl_info.default,
+      ctermfg = hl_info.ctermfg,
+      ctermbg = hl_info.ctermbg,
+      cterm = hl_info.cterm,
+    }
+  end
+
   -- Save original cursor highlights and make cursor invisible
-  local original_cursor = vim.api.nvim_get_hl(0, { name = "Cursor" })
-  local original_lcursor = vim.api.nvim_get_hl(0, { name = "lCursor" })
-  local original_termcursor = vim.api.nvim_get_hl(0, { name = "TermCursor" })
+  local original_cursor = hl_to_set_format(vim.api.nvim_get_hl(0, { name = "Cursor" }))
+  local original_lcursor = hl_to_set_format(vim.api.nvim_get_hl(0, { name = "lCursor" }))
+  local original_termcursor = hl_to_set_format(vim.api.nvim_get_hl(0, { name = "TermCursor" }))
 
   -- Preserve original colors and add blend=100 to make cursor invisible
   local cursor_invisible = vim.tbl_extend("force", original_cursor, { blend = 100 })
@@ -5778,7 +5716,7 @@ function M.show_review_menu()
   end
 
   -- Define menu sections based on mode
-  local sections = {}
+  local sections
 
   if not in_review_mode then
     -- Not in review mode - show PR selection options
