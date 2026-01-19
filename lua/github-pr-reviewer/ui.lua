@@ -223,7 +223,7 @@ local function select_review_requests_telescope(prs, show_icons, on_select)
         end,
       }),
       sorter = conf.generic_sorter({}),
-      attach_mappings = function(prompt_bufnr, map)
+      attach_mappings = function(prompt_bufnr)
         actions.select_default:replace(function()
           local selection = action_state.get_selected_entry()
           actions.close(prompt_bufnr)
@@ -409,7 +409,6 @@ local function select_all_comments_fzf(comments, callback)
   vim.fn.mkdir(temp_dir, "p")
 
   -- Write each comment to a separate file
-  local temp_files = {}
   for i, comment in ipairs(comments) do
     local temp_file = temp_dir .. "/comment_" .. i .. ".txt"
     local status = comment.is_local and "[Pending]" or "[Posted]"
@@ -425,7 +424,6 @@ local function select_all_comments_fzf(comments, callback)
     table.insert(lines, comment.body)
 
     vim.fn.writefile(lines, temp_file)
-    table.insert(temp_files, temp_file)
   end
 
   -- Create entries with index
@@ -615,7 +613,7 @@ end
 
 -- Select global PR comment with telescope
 local function select_global_comments_telescope(comments, callback)
-  local ok, telescope = pcall(require, "telescope")
+  local ok = pcall(require, "telescope")
   if not ok then
     vim.notify("Telescope not installed, using native picker", vim.log.levels.WARN)
     -- Fallback to vim.ui.select
@@ -682,7 +680,7 @@ local function select_global_comments_telescope(comments, callback)
         vim.bo[self.state.bufnr].filetype = "markdown"
       end,
     }),
-    attach_mappings = function(prompt_bufnr, map)
+    attach_mappings = function(prompt_bufnr)
       actions.select_default:replace(function()
         local selection = action_state.get_selected_entry()
         actions.close(prompt_bufnr)
