@@ -54,6 +54,12 @@ M._buffer_hunks = {}
 M._diff_view_mode = "unified" -- "unified" or "split"
 M._split_view_state = {}      -- tracks split view buffers and windows
 M._buffer_stats = {}
+M._current_comment_float = {
+  win = nil,   -- Float window ID
+  buf = nil,   -- Float buffer ID
+  line = nil,  -- Line number the float is for
+  bufnr = nil  -- Source buffer the float is for
+}
 M._viewed_files = {}
 M._collapsed_dirs = {}         -- tracks which directories are collapsed in review buffer
 M._local_pending_comments = {} -- Local storage for pending comments (not synced to GitHub yet)
@@ -2214,12 +2220,53 @@ function M.show_comments_at_cursor()
     end
   end
 
-  vim.lsp.util.open_floating_preview(lines, "markdown", {
+  local float_win, float_buf = vim.lsp.util.open_floating_preview(lines, "markdown", {
     border = "rounded",
-    focus_id = "pr_review_comment",
     max_width = 80,
     max_height = 20,
   })
+
+  -- Track the current float state
+  M._current_comment_float = {
+    win = float_win,
+    buf = float_buf,
+    line = cursor_line,
+    bufnr = bufnr
+  }
+end
+
+-- Helper function to refresh the current comment float
+local function refresh_comment_float()
+  local state = M._current_comment_float
+  if not state.line or not state.bufnr then
+    return
+  end
+
+  -- Store the current window to return focus to it
+  local original_win = vim.api.nvim_get_current_win()
+
+  -- Check if we're still in the same buffer and on the same line
+  local current_bufnr = vim.api.nvim_get_current_buf()
+  local cursor_line = vim.api.nvim_win_get_cursor(0)[1]
+
+  if current_bufnr ~= state.bufnr or cursor_line ~= state.line then
+    return
+  end
+
+  -- Close the existing float if it's still valid
+  if state.win and vim.api.nvim_win_is_valid(state.win) then
+    vim.api.nvim_win_close(state.win, true)
+  end
+
+  -- Re-show the float for the same line
+  M.show_comments_at_cursor()
+
+  -- Return focus to the original window
+  vim.schedule(function()
+    if vim.api.nvim_win_is_valid(original_win) then
+      vim.api.nvim_set_current_win(original_win)
+    end
+  end)
 end
 
 -- Helper function to select emoji and add/remove reaction
@@ -2254,7 +2301,10 @@ local function select_and_add_reaction(pr_number, comment, bufnr)
             vim.notify("Reaction removed!", vim.log.levels.INFO)
             -- Reload comments to show the updated reactions
             github.clear_cache()
-            M.load_comments_for_buffer(bufnr, true)
+            M.load_comments_for_buffer(bufnr, true, function()
+              -- Refresh the comment float after comments are loaded
+              refresh_comment_float()
+            end)
           else
             vim.notify("Failed to remove reaction: " .. (remove_err or "unknown error"), vim.log.levels.ERROR)
           end
@@ -2266,7 +2316,62 @@ local function select_and_add_reaction(pr_number, comment, bufnr)
             vim.notify("Reaction added!", vim.log.levels.INFO)
             -- Reload comments to show the new reaction
             github.clear_cache()
-            M.load_comments_for_buffer(bufnr, true)
+            M.load_comments_for_buffer(bufnr, true, function()
+              -- Refresh the comment float after comments are loaded
+              refresh_comment_float()
+            end)
+          else
+            vim.notify("Failed to add reaction: " .. (add_err or "unknown error"), vim.log.levels.ERROR)
+          end
+        end)
+      end
+    end)
+  end)
+end
+
+-- Add emoji reaction to a global comment (doesn't require buffer context)
+local function select_and_add_reaction_to_global_comment(pr_number, comment)
+  -- First, get current user to check if they already reacted
+  github.get_current_user(function(current_user, err)
+    if err or not current_user then
+      vim.notify("Failed to get current user: " .. (err or "unknown error"), vim.log.levels.ERROR)
+      return
+    end
+
+    ui.select_emoji_reaction(function(reaction_content)
+      if not reaction_content then
+        return
+      end
+
+      -- Check if user already has this reaction on the comment
+      local existing_reaction_id = nil
+      if comment.reactions then
+        for _, reaction in ipairs(comment.reactions) do
+          if reaction.content == reaction_content and reaction.user == current_user then
+            existing_reaction_id = reaction.id
+            break
+          end
+        end
+      end
+
+      if existing_reaction_id then
+        -- Remove the reaction (use issue comment API for global comments)
+        github.remove_issue_comment_reaction(comment.id, existing_reaction_id, function(success, remove_err)
+          if success then
+            vim.notify("Reaction removed!", vim.log.levels.INFO)
+            -- Clear cache so next time we fetch fresh data
+            github.clear_cache()
+          else
+            vim.notify("Failed to remove reaction: " .. (remove_err or "unknown error"), vim.log.levels.ERROR)
+          end
+        end)
+      else
+        -- Add the reaction (use issue comment API for global comments)
+        github.add_issue_comment_reaction(comment.id, reaction_content, function(success, add_err)
+          if success then
+            vim.notify("Reaction added!", vim.log.levels.INFO)
+            -- Clear cache so next time we fetch fresh data
+            github.clear_cache()
           else
             vim.notify("Failed to add reaction: " .. (add_err or "unknown error"), vim.log.levels.ERROR)
           end
@@ -2332,15 +2437,17 @@ function M.add_reaction_to_comment()
   select_and_add_reaction(pr_number, target_comment, bufnr)
 end
 
-function M.load_comments_for_buffer(bufnr, force_reload)
+function M.load_comments_for_buffer(bufnr, force_reload, callback)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
 
   if not M.config.show_comments then
+    if callback then callback() end
     return
   end
 
   local pr_number = vim.g.pr_review_number
   if not pr_number then
+    if callback then callback() end
     return
   end
 
@@ -2353,6 +2460,7 @@ function M.load_comments_for_buffer(bufnr, force_reload)
   -- Get regular comments
   github.get_comments_for_file(pr_number, file_path, function(comments, err)
     if err then
+      if callback then callback() end
       return
     end
 
@@ -2397,6 +2505,8 @@ function M.load_comments_for_buffer(bufnr, force_reload)
           if vim.api.nvim_buf_is_valid(bufnr) then
             display_comments(bufnr, comments)
           end
+          -- Call callback after display is complete
+          if callback then callback() end
         end, 50)
       else
         M._buffer_comments[bufnr] = nil
@@ -2404,6 +2514,8 @@ function M.load_comments_for_buffer(bufnr, force_reload)
           if vim.api.nvim_buf_is_valid(bufnr) then
             vim.api.nvim_buf_clear_namespace(bufnr, ns_id, 0, -1)
           end
+          -- Call callback after clearing
+          if callback then callback() end
         end)
       end
     end)
@@ -2772,6 +2884,49 @@ function M.request_changes()
       action = "request_changes",
     })
   end)
+end
+
+function M.merge_pr()
+  local pr_number = vim.g.pr_review_number
+  if not pr_number then
+    vim.notify("Not in review mode", vim.log.levels.WARN)
+    return
+  end
+
+  -- Strategy selection
+  vim.ui.select(
+    { "squash", "merge", "rebase" },
+    { prompt = "Select merge strategy:" },
+    function(strategy)
+      if not strategy then
+        return
+      end
+
+      -- Delete branch confirmation
+      vim.ui.select(
+        { "Yes", "No" },
+        { prompt = "Delete branch after merge?" },
+        function(delete_choice)
+          if not delete_choice then
+            return
+          end
+
+          local delete_branch = delete_choice == "Yes"
+          vim.notify("Merging PR #" .. pr_number .. " with " .. strategy .. "...", vim.log.levels.INFO)
+
+          github.merge_pr(pr_number, strategy, delete_branch, function(ok, err)
+            if ok then
+              vim.notify("PR #" .. pr_number .. " merged successfully!", vim.log.levels.INFO)
+              -- Auto-cleanup review state after successful merge
+              M.cleanup_review_branch()
+            else
+              vim.notify("Failed to merge PR: " .. (err or "unknown error"), vim.log.levels.ERROR)
+            end
+          end)
+        end
+      )
+    end
+  )
 end
 
 function M.submit_pending_comments()
@@ -3896,7 +4051,11 @@ function M.list_global_comments()
       table.insert(lines, "")
       table.insert(lines, "───────────────────────────────")
       table.insert(lines, "")
-      table.insert(lines, "Press 'r' to reply | 'q' or <Esc> to close")
+      if comment.type == "comment" then
+        table.insert(lines, "Press 'r' to reply | 'R' to add a reaction | 'q' or <Esc> to close")
+      else
+        table.insert(lines, "Press 'r' to reply | 'q' or <Esc> to close")
+      end
 
       local buf = vim.api.nvim_create_buf(false, true)
       vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
@@ -3989,6 +4148,14 @@ function M.list_global_comments()
           comment_id = comment.id,
         })
       end, { buffer = buf })
+
+      -- Add reaction keymap only for actual comments (not reviews)
+      if comment.type == "comment" then
+        vim.keymap.set("n", "R", function()
+          close_window()
+          select_and_add_reaction_to_global_comment(pr_number, comment)
+        end, { buffer = buf })
+      end
 
       -- Auto-close if user leaves the buffer (e.g., switches windows)
       vim.api.nvim_create_autocmd("BufLeave", {
@@ -4277,7 +4444,10 @@ function M.edit_my_comment()
               clear_draft(pr_number, file_path, cursor_line, "edit", comment.id)
 
               vim.notify("✅ Local pending comment updated", vim.log.levels.INFO)
-              M.load_comments_for_buffer(bufnr, false)
+              M.load_comments_for_buffer(bufnr, false, function()
+                -- Refresh the comment float after comments are loaded
+                refresh_comment_float()
+              end)
             else
               -- It's a GitHub comment, use API
               vim.notify("Updating comment...", vim.log.levels.INFO)
@@ -4287,7 +4457,10 @@ function M.edit_my_comment()
                   clear_draft(pr_number, file_path, cursor_line, "edit", comment.id)
 
                   vim.notify("✅ Comment updated", vim.log.levels.INFO)
-                  M.load_comments_for_buffer(bufnr, true)
+                  M.load_comments_for_buffer(bufnr, true, function()
+                    -- Refresh the comment float after comments are loaded
+                    refresh_comment_float()
+                  end)
                 else
                   vim.notify("❌ Failed to edit: " .. (edit_err or "unknown"), vim.log.levels.ERROR)
                 end
@@ -4890,6 +5063,10 @@ function M.setup(opts)
     M.request_changes()
   end, { desc = "Request changes on the current PR" })
 
+  vim.api.nvim_create_user_command("PRMerge", function()
+    M.merge_pr()
+  end, { desc = "Merge the current PR" })
+
   vim.api.nvim_create_user_command("PRComment", function()
     M.add_comment()
   end, { desc = "Add a general comment to the PR" })
@@ -5109,6 +5286,18 @@ function M.setup(opts)
       if vim.g.pr_review_number then
         update_hunk_navigation_hints()
         update_changes_float()
+
+        -- Only clear comment float state if cursor moved to a different line
+        local state = M._current_comment_float
+        if state.line and state.bufnr then
+          local current_bufnr = vim.api.nvim_get_current_buf()
+          local cursor_line = vim.api.nvim_win_get_cursor(0)[1]
+
+          if current_bufnr ~= state.bufnr or cursor_line ~= state.line then
+            -- Cursor actually moved to a different line or buffer
+            M._current_comment_float = { win = nil, line = nil, bufnr = nil }
+          end
+        end
       end
     end,
   })
@@ -5526,6 +5715,7 @@ function M.show_review_menu()
           { key = "c", desc = "Comment on PR",      cmd = function() M.add_comment() end },
           { key = "a", desc = "Approve PR",         cmd = function() M.approve_pr() end },
           { key = "x", desc = "Request Changes",    cmd = function() M.request_changes() end },
+          { key = "M", desc = "Merge PR",           cmd = function() M.merge_pr() end },
           { key = "e", desc = "Exit Review",        cmd = function() M.cleanup_review_branch() end },
         }
       },

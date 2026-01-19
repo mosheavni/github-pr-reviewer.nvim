@@ -398,14 +398,47 @@ function M.fetch_pr_global_comments(pr_number, callback)
   local function check_complete()
     completed = completed + 1
     if completed == total then
-      -- Sort by date
-      table.sort(all_comments, function(a, b)
-        return a.created_at < b.created_at
-      end)
+      -- Fetch reactions for all comments (not reviews)
+      local comments_with_reactions = {}
+      for _, item in ipairs(all_comments) do
+        if item.type == "comment" then
+          table.insert(comments_with_reactions, item)
+        end
+      end
 
-      vim.schedule(function()
-        callback(all_comments, nil)
-      end)
+      if #comments_with_reactions == 0 then
+        -- No comments to fetch reactions for, just sort and return
+        table.sort(all_comments, function(a, b)
+          return a.created_at < b.created_at
+        end)
+        vim.schedule(function()
+          callback(all_comments, nil)
+        end)
+        return
+      end
+
+      -- Fetch reactions for each comment
+      local pending = #comments_with_reactions
+      for _, comment in ipairs(comments_with_reactions) do
+        M.get_issue_comment_reactions(comment.id, function(reactions, err)
+          if not err and reactions then
+            comment.reactions = reactions
+          else
+            comment.reactions = {}
+          end
+
+          pending = pending - 1
+          if pending == 0 then
+            -- All reactions fetched, sort and return
+            table.sort(all_comments, function(a, b)
+              return a.created_at < b.created_at
+            end)
+            vim.schedule(function()
+              callback(all_comments, nil)
+            end)
+          end
+        end)
+      end
     end
   end
 
@@ -725,6 +758,36 @@ function M.request_changes(pr_number, body, callback)
           callback(true, nil)
         else
           callback(false, "Failed to request changes")
+        end
+      end)
+    end,
+  })
+end
+
+function M.merge_pr(pr_number, strategy, delete_branch, callback)
+  -- strategy: "squash" | "merge" | "rebase"
+  -- delete_branch: boolean
+  local cmd = string.format("gh pr merge %d --%s", pr_number, strategy)
+
+  if delete_branch then
+    cmd = cmd .. " --delete-branch"
+  end
+
+  local stderr_output = {}
+  vim.fn.jobstart(cmd, {
+    stderr_buffered = true,
+    on_stderr = function(_, err_data)
+      if err_data then
+        vim.list_extend(stderr_output, err_data)
+      end
+    end,
+    on_exit = function(_, code)
+      vim.schedule(function()
+        if code == 0 then
+          callback(true, nil)
+        else
+          local err_msg = table.concat(stderr_output, "\n")
+          callback(false, err_msg ~= "" and err_msg or "Failed to merge PR")
         end
       end)
     end,
@@ -1263,6 +1326,116 @@ function M.remove_comment_reaction(comment_id, reaction_id, callback)
   -- PR review comments use /pulls/comments, not /issues/comments
   local cmd = string.format(
     "gh api repos/{owner}/{repo}/pulls/comments/%d/reactions/%d -X DELETE -H 'Accept: application/vnd.github+json'",
+    comment_id,
+    reaction_id
+  )
+
+  vim.fn.jobstart(cmd, {
+    on_exit = function(_, code)
+      vim.schedule(function()
+        if code == 0 then
+          callback(true, nil)
+        else
+          callback(false, "Failed to remove reaction")
+        end
+      end)
+    end,
+  })
+end
+
+-- Get reactions for an issue comment (global comment)
+function M.get_issue_comment_reactions(comment_id, callback)
+  local cmd = string.format(
+    "gh api repos/{owner}/{repo}/issues/comments/%d/reactions --jq '.[] | {id: .id, content: .content, user: .user.login}'",
+    comment_id
+  )
+
+  vim.fn.jobstart(cmd, {
+    stdout_buffered = true,
+    on_stdout = function(_, data)
+      if not data then
+        vim.schedule(function()
+          callback({}, nil)
+        end)
+        return
+      end
+
+      local reactions = {}
+      for _, line in ipairs(data) do
+        if line and line ~= "" then
+          local ok, reaction = pcall(vim.fn.json_decode, line)
+          if ok and reaction then
+            table.insert(reactions, {
+              id = reaction.id,
+              content = reaction.content,
+              user = reaction.user,
+            })
+          end
+        end
+      end
+
+      vim.schedule(function()
+        callback(reactions, nil)
+      end)
+    end,
+    on_exit = function(_, code)
+      if code ~= 0 then
+        vim.schedule(function()
+          callback(nil, "Failed to fetch reactions")
+        end)
+      end
+    end,
+  })
+end
+
+-- Add a reaction to an issue comment (global comment)
+function M.add_issue_comment_reaction(comment_id, content, callback)
+  local json_body = vim.fn.json_encode({
+    content = content,
+  })
+
+  local cmd = string.format(
+    "gh api repos/{owner}/{repo}/issues/comments/%d/reactions -X POST --input - -H 'Accept: application/vnd.github+json'",
+    comment_id
+  )
+
+  local stderr_output = {}
+  local stdout_output = {}
+  local job_id = vim.fn.jobstart(cmd, {
+    stdout_buffered = true,
+    stderr_buffered = true,
+    on_stdout = function(_, data)
+      if data then
+        vim.list_extend(stdout_output, data)
+      end
+    end,
+    on_stderr = function(_, data)
+      if data then
+        vim.list_extend(stderr_output, data)
+      end
+    end,
+    on_exit = function(_, code)
+      vim.schedule(function()
+        if code == 0 then
+          callback(true, nil)
+        else
+          local err_msg = table.concat(stderr_output, "\n")
+          local out_msg = table.concat(stdout_output, "\n")
+          local full_error = err_msg ~= "" and err_msg or out_msg
+          callback(false, full_error ~= "" and full_error or "Failed to add reaction (unknown error)")
+        end
+      end)
+    end,
+  })
+
+  vim.fn.chansend(job_id, json_body)
+  vim.fn.chanclose(job_id, "stdin")
+end
+
+-- Remove a reaction from an issue comment (global comment)
+function M.remove_issue_comment_reaction(comment_id, reaction_id, callback)
+  local cmd = string.format(
+    "gh api repos/{owner}/{repo}/issues/comments/%d/reactions/%d -X DELETE -H 'Accept: application/vnd.github+json'",
     comment_id,
     reaction_id
   )

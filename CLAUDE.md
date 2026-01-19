@@ -5,6 +5,7 @@ This document contains essential information about the architecture, patterns, a
 ## Overview
 
 Neovim/Lua plugin for reviewing GitHub Pull Requests directly in the editor, with support for:
+
 - Navigation between modified files
 - Diff visualization (unified and split/side-by-side)
 - Comment system (inline and global)
@@ -14,9 +15,11 @@ Neovim/Lua plugin for reviewing GitHub Pull Requests directly in the editor, wit
 ## Main Architecture
 
 ### Main File
+
 - **`lua/github-pr-reviewer/init.lua`** (~4400 lines): Contains all plugin logic
 
 ### Auxiliary Modules
+
 - **`lua/github-pr-reviewer/github.lua`**: GitHub GraphQL API interaction
 - **`lua/github-pr-reviewer/ui.lua`**: UI components (pickers, menus)
 
@@ -25,6 +28,7 @@ Neovim/Lua plugin for reviewing GitHub Pull Requests directly in the editor, wit
 ### 1. Diff Visualization Modes
 
 #### Unified Mode (Default)
+
 - Single file with inline highlights
 - **Visual indicators**: `│` (vertical bar) in the signs column for modified lines
 - **Important namespaces**:
@@ -33,6 +37,7 @@ Neovim/Lua plugin for reviewing GitHub Pull Requests directly in the editor, wit
   - `hunk_hints_ns_id`: Navigation hints (←/→)
 
 #### Split Mode (Side-by-Side)
+
 - **Two buffers side by side**:
   - Left: `[BEFORE] filename` (git base version)
   - Right: Current file (PR version)
@@ -45,22 +50,25 @@ Neovim/Lua plugin for reviewing GitHub Pull Requests directly in the editor, wit
 ### 2. Buffer System
 
 #### Special Buffers
+
 - **`[BEFORE] <path>`**: Read-only buffer with git base content
 - **Review Buffer**: Special buffer with list of modified files
 
 #### Buffer State Tracking
+
 ```lua
-M._buffer_changes[bufnr] = lines      -- Modified lines
-M._buffer_hunks[bufnr] = hunks        -- Change hunks (for navigation)
-M._buffer_comments[bufnr] = comments  -- Comments in buffer
-M._buffer_stats[bufnr] = stats        -- Statistics (+X/-Y)
-M._buffer_jumped[bufnr] = bool        -- Whether already jumped to first change
+M._buffer_changes[bufnr] = lines -- Modified lines
+M._buffer_hunks[bufnr] = hunks -- Change hunks (for navigation)
+M._buffer_comments[bufnr] = comments -- Comments in buffer
+M._buffer_stats[bufnr] = stats -- Statistics (+X/-Y)
+M._buffer_jumped[bufnr] = bool -- Whether already jumped to first change
 M._buffer_keymaps_saved[bufnr] = bool -- Whether keymaps already configured
 ```
 
 ### 3. Floating Windows (Popups)
 
 Three floating windows displayed on the right:
+
 1. **General Info**: File X/Total, viewed status
 2. **Buffer Info**: Changes count, stats, comments
 3. **Keymaps**: Available shortcuts
@@ -70,6 +78,7 @@ Three floating windows displayed on the right:
 ### 4. Navigation System
 
 #### Automatic Navigation (C-h/C-l)
+
 ```lua
 -- Flow when navigating with C-h or C-l:
 1. restore_unified_view()           -- Closes previous split
@@ -101,6 +110,7 @@ When user manually changes buffer (`:b` or fzf), `BufEnter` detects and runs `M.
 **Cause**: Extmarks being added to buffers that are in diff mode, causing duplicate highlights (vim diff + our indicators).
 
 **Solution**:
+
 1. Clear ALL namespaces before creating split: `vim.api.nvim_buf_clear_namespace(bufnr, -1, 0, -1)`
 2. Don't add extmarks when `M._diff_view_mode == "split"`
 3. `BufEnter` must skip `load_inline_diff_for_buffer` in split mode
@@ -110,6 +120,7 @@ When user manually changes buffer (`:b` or fzf), `BufEnter` detects and runs `M.
 **Cause**: `load_changes_for_buffer` wasn't being called in split mode, so `M._buffer_hunks[bufnr]` was empty.
 
 **Solution**:
+
 - **ALWAYS** call `load_changes_for_buffer` (to populate hunks)
 - **CONDITIONALLY** add extmarks based on `M._diff_view_mode`
 
@@ -126,6 +137,7 @@ end
 **Cause**: Vim's internal state (diff cache) not being cleaned when recreating split.
 
 **Solution** (`M.fix_vsplit()`):
+
 ```lua
 1. restore_unified_view()                    -- Close split
 2. vim.cmd("diffoff!")                       -- Turn off diff completely
@@ -141,6 +153,7 @@ end
 ## Patterns and Conventions
 
 ### 1. Namespace IDs
+
 ```lua
 local ns_id = vim.api.nvim_create_namespace("pr_review_comments")
 local changes_ns_id = vim.api.nvim_create_namespace("pr_review_changes")
@@ -151,22 +164,25 @@ local hunk_hints_ns_id = vim.api.nvim_create_namespace("pr_review_hunk_hints")
 ### 2. State Cleanup
 
 **ALWAYS clear namespaces before recreating splits**:
+
 ```lua
 vim.api.nvim_buf_clear_namespace(bufnr, diff_ns_id, 0, -1)
 vim.api.nvim_buf_clear_namespace(bufnr, changes_ns_id, 0, -1)
 ```
 
 **Clear EVERYTHING** (useful for complete reset):
+
 ```lua
-vim.api.nvim_buf_clear_namespace(bufnr, -1, 0, -1)  -- -1 = all
+vim.api.nvim_buf_clear_namespace(bufnr, -1, 0, -1) -- -1 = all
 ```
 
 ### 3. Diff Mode
 
 **Resetting mode to unified is CRITICAL**:
+
 ```lua
 -- In restore_unified_view():
-M._diff_view_mode = "unified"  -- ALWAYS reset!
+M._diff_view_mode = "unified" -- ALWAYS reset!
 ```
 
 Without this, the mode becomes out of sync with the real state.
@@ -174,6 +190,7 @@ Without this, the mode becomes out of sync with the real state.
 ### 4. Timing and Scheduling
 
 Use `vim.defer_fn()` when you need Vim to process something first:
+
 - After `edit` command (50ms)
 - After creating buffers (50-100ms)
 - After layout changes
@@ -183,6 +200,7 @@ Use `vim.schedule()` for operations that should run in the next event loop.
 ### 5. Validity Checks
 
 **ALWAYS check if buffers/windows are valid before using**:
+
 ```lua
 if vim.api.nvim_buf_is_valid(bufnr) then
   -- safe to use
@@ -265,6 +283,7 @@ restore_unified_view()
 ## Important Autocmds
 
 ### BufEnter
+
 ```lua
 -- The most critical! Controls all buffer entry logic:
 1. Load comments
@@ -276,6 +295,7 @@ restore_unified_view()
 ```
 
 ### CursorMoved
+
 ```lua
 -- Update hints and floats when cursor moves
 update_hunk_navigation_hints()
@@ -283,6 +303,7 @@ update_changes_float()
 ```
 
 ### WinLeave
+
 ```lua
 -- Close floats when leaving window
 close_float_wins()
@@ -293,6 +314,7 @@ close_float_wins()
 ### Fetching Base Content
 
 Tries multiple refs in order:
+
 ```lua
 1. origin/{base_branch}:{file}
 2. {base_branch}:{file}
@@ -306,6 +328,7 @@ Tries multiple refs in order:
 ### Archived Files (Deleted)
 
 Status "D" (deleted):
+
 - Fetch from `HEAD:{file}` (version before deletion)
 - Read-only buffer
 - All lines with DiffDelete highlight
@@ -313,12 +336,14 @@ Status "D" (deleted):
 ### New Files
 
 Status "A" or "N" (added/new):
+
 - Base content = empty
 - **DO NOT show indicators** (│) - entire file would be highlighted
 
 ## Available Commands
 
 ### Main
+
 - `:PR <number>` - Start review
 - `:PRApprove` - Approve PR
 - `:PRReject` - Reject PR
@@ -326,12 +351,14 @@ Status "A" or "N" (added/new):
 - `:PRMenu` - Interactive menu
 
 ### Comments
+
 - `:PRAddComment` - Add line comment
 - `:PRAddPendingComment` - Pending comment (not published)
 - `:PRSubmitPendingComments` - Publish pending comments
 - `:PRListAllComments` - List all comments
 
 ### Navigation
+
 - Keybinds (configurable):
   - `<C-j>` / `<C-k>` - Next/prev hunk
   - `<C-l>` / `<C-h>` - Next/prev file
@@ -342,6 +369,7 @@ Status "A" or "N" (added/new):
 ## Configuration
 
 ### Structure
+
 ```lua
 M.config = {
   show_floats = true,
@@ -359,6 +387,7 @@ M.config = {
 ### Highlight Groups
 
 Defined in setup:
+
 ```lua
 - PRReviewFile (links to Directory)
 - PRReviewViewed (links to Comment)
@@ -369,6 +398,7 @@ Defined in setup:
 ## Debugging Tips
 
 ### 1. Check Current State
+
 ```lua
 :lua print(vim.inspect(require('github-pr-reviewer')._diff_view_mode))
 :lua print(vim.inspect(require('github-pr-reviewer')._split_view_state))
@@ -376,17 +406,20 @@ Defined in setup:
 ```
 
 ### 2. Force Reset
+
 ```lua
 :lua require('github-pr-reviewer')._diff_view_mode = "unified"
 :diffoff!
 ```
 
 ### 3. Check Namespaces
+
 ```lua
 :lua vim.api.nvim_buf_clear_namespace(0, -1, 0, -1)  -- Clear everything
 ```
 
 ### 4. Reload Plugin
+
 ```lua
 :luafile lua/github-pr-reviewer/init.lua
 ```
@@ -425,18 +458,20 @@ Defined in setup:
 ### ❌ DON'T DO
 
 1. **Modify diffopt globally without restoring**
+
    ```lua
    -- WRONG:
-   vim.o.diffopt = "internal,filler,iwhite"  -- Can break diff!
+   vim.o.diffopt = "internal,filler,iwhite" -- Can break diff!
 
    -- RIGHT:
    -- Use user's diffopt without modifying
    ```
 
 2. **Add extmarks in split mode**
+
    ```lua
    -- WRONG:
-   vim.api.nvim_buf_set_extmark(bufnr, changes_ns_id, ...)  -- In any mode
+   vim.api.nvim_buf_set_extmark(bufnr, changes_ns_id, ...) -- In any mode
 
    -- RIGHT:
    if M._diff_view_mode ~= "split" then
@@ -445,19 +480,21 @@ Defined in setup:
    ```
 
 3. **Forget to reset mode after restore**
+
    ```lua
    -- WRONG:
    restore_unified_view()
    -- mode is still "split"!
 
    -- RIGHT:
-   restore_unified_view()  -- Already resets mode internally
+   restore_unified_view() -- Already resets mode internally
    ```
 
 4. **Don't check validity before using**
+
    ```lua
    -- WRONG:
-   vim.api.nvim_win_close(win, true)  -- Can error if window already closed
+   vim.api.nvim_win_close(win, true) -- Can error if window already closed
 
    -- RIGHT:
    if vim.api.nvim_win_is_valid(win) then
@@ -470,7 +507,7 @@ Defined in setup:
 1. **Clear namespaces before creating splits**
 2. **Check buffer/window validity**
 3. **Use defer_fn after layout operations**
-4. **Reset M._diff_view_mode correctly**
+4. **Reset M.\_diff_view_mode correctly**
 5. **Test with new (A), deleted (D), and modified (M) files**
 
 ## Performance
@@ -521,7 +558,7 @@ Defined in setup:
 
 ## Contact and Support
 
-- GitHub Issues: https://github.com/username/neovim-pr-reviewer/issues
+- GitHub Issues: <https://github.com/username/neovim-pr-reviewer/issues>
 - Documentation: `:h github-pr-reviewer`
 
 ---
