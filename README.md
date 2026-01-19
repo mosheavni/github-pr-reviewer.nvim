@@ -26,6 +26,7 @@ It is a experimental project and may contain bugs. Use at your own risk.
 ## Features
 
 ### Core Review Features
+
 - ✅ **Review PRs locally** - Checkout PR changes as unstaged modifications
 - ✅ **Session persistence** - Resume reviews after restarting Neovim
 - ✅ **Fork PR support** - Automatically handles PRs from forks
@@ -36,6 +37,7 @@ It is a experimental project and may contain bugs. Use at your own risk.
 - ✅ **Inline diff** - Built-in diff visualization (no gitsigns required)
 
 ### Comment Management
+
 - 💬 **View comments inline** - PR comments appear as virtual text with reactions
 - 💬 **Add line comments** - Comment on specific lines with context
 - 💬 **Pending comments** - Draft comments locally, submit all at once
@@ -46,6 +48,7 @@ It is a experimental project and may contain bugs. Use at your own risk.
 - 👍 **Emoji reactions** - Add/remove GitHub reactions (👍 👎 😄 🎉 😕 ❤️ 🚀 👀) to comments
 
 ### Review Actions
+
 - ✓ **Approve PRs** - Submit approval with optional comment
 - ✗ **Request changes** - Request changes with explanation
 - 📊 **PR Info** - View stats, reviews, merge status, CI checks
@@ -53,6 +56,7 @@ It is a experimental project and may contain bugs. Use at your own risk.
 - 🎨 **Interactive menu** - `:PR` command for quick access to all features
 
 ### UI & Pickers
+
 - 🔍 **Multiple picker support** - Native `vim.ui.select`, Telescope, or fzf-lua
 - 🔍 **File previews** - See file content and context when selecting comments
 - 🎨 **Smart formatting** - Shows file paths, authors, status, and comment previews
@@ -71,7 +75,7 @@ It is a experimental project and may contain bugs. Use at your own risk.
 
 ```lua
 {
-  "otavioschwanck/github-pr-reviewer.nvim",
+  "mosheavni/github-pr-reviewer.nvim",
   opts = {
     -- options here
   },
@@ -85,22 +89,22 @@ It is a experimental project and may contain bugs. Use at your own risk.
 ### [packer.nvim](https://github.com/wbthomason/packer.nvim)
 
 ```lua
-use {
-  "otavioschwanck/github-pr-reviewer.nvim",
+use({
+  "mosheavni/github-pr-reviewer.nvim",
   config = function()
     require("github-pr-reviewer").setup()
 
     -- Recommended keymaps
     vim.keymap.set("n", "<leader>p", "<cmd>PRReviewMenu<cr>", { desc = "PR Review Menu" })
     vim.keymap.set("v", "<leader>p", ":<C-u>'<,'>PRSuggestChange<CR>", { desc = "Suggest change" })
-  end
-}
+  end,
+})
 ```
 
 ### [vim-plug](https://github.com/junegunn/vim-plug)
 
 ```vim
-Plug 'otavioschwanck/github-pr-reviewer.nvim'
+Plug 'mosheavni/github-pr-reviewer.nvim'
 
 " In your init.vim or init.lua
 lua << EOF
@@ -164,43 +168,43 @@ require("github-pr-reviewer").setup({
 
 ### Main Menu
 
-| Command | Description |
-|---------|-------------|
+| Command                  | Description                                      |
+| ------------------------ | ------------------------------------------------ |
 | `:PR` or `:PRReviewMenu` | Show interactive menu with all available actions |
 
 ### Review Workflow
 
-| Command | Description |
-|---------|-------------|
-| `:PRReview` | Select and start reviewing a PR |
-| `:PRListReviewRequests` | List PRs where you are requested as reviewer |
-| `:PRReviewCleanup` | End review, clean up changes, return to previous branch |
-| `:PRInfo` | Show PR information (stats, reviews, merge status) |
-| `:PROpen` | Open PR in browser |
-| `:PRLoadLastSession` | Restore last PR review session (after restarting Neovim) |
-| `:PRReviewBuffer` | Toggle review buffer (interactive file browser) |
+| Command                 | Description                                              |
+| ----------------------- | -------------------------------------------------------- |
+| `:PRReview`             | Select and start reviewing a PR                          |
+| `:PRListReviewRequests` | List PRs where you are requested as reviewer             |
+| `:PRReviewCleanup`      | End review, clean up changes, return to previous branch  |
+| `:PRInfo`               | Show PR information (stats, reviews, merge status)       |
+| `:PROpen`               | Open PR in browser                                       |
+| `:PRLoadLastSession`    | Restore last PR review session (after restarting Neovim) |
+| `:PRReviewBuffer`       | Toggle review buffer (interactive file browser)          |
 
 ### Comments
 
-| Command | Description |
-|---------|-------------|
-| `:PRReviewComment` | Show comments at cursor line (also shows on `CursorHold`) |
-| `:PRLineComment` | Add a review comment on the current line |
-| `:PRPendingComment` | Add a pending comment (submitted with approval/rejection) |
-| `:PRListPendingComments` | List all pending comments and navigate to selected one |
-| `:PRListAllComments` | List ALL comments (pending + posted) with file preview |
-| `:PRReply` | Reply to a comment on the current line |
-| `:PREditComment` | Edit your comment (works for both pending and posted) |
-| `:PRDeleteComment` | Delete your comment on the current line |
-| `:PRToggleReaction` | Toggle emoji reaction on a comment at the current line |
+| Command                  | Description                                               |
+| ------------------------ | --------------------------------------------------------- |
+| `:PRReviewComment`       | Show comments at cursor line (also shows on `CursorHold`) |
+| `:PRLineComment`         | Add a review comment on the current line                  |
+| `:PRPendingComment`      | Add a pending comment (submitted with approval/rejection) |
+| `:PRListPendingComments` | List all pending comments and navigate to selected one    |
+| `:PRListAllComments`     | List ALL comments (pending + posted) with file preview    |
+| `:PRReply`               | Reply to a comment on the current line                    |
+| `:PREditComment`         | Edit your comment (works for both pending and posted)     |
+| `:PRDeleteComment`       | Delete your comment on the current line                   |
+| `:PRToggleReaction`      | Toggle emoji reaction on a comment at the current line    |
 
 ### Review Actions
 
-| Command | Description |
-|---------|-------------|
-| `:PRApprove` | Approve the PR (submits pending comments if any) |
+| Command             | Description                                                 |
+| ------------------- | ----------------------------------------------------------- |
+| `:PRApprove`        | Approve the PR (submits pending comments if any)            |
 | `:PRRequestChanges` | Request changes on the PR (submits pending comments if any) |
-| `:PRComment` | Add a general comment to the PR |
+| `:PRComment`        | Add a general comment to the PR                             |
 
 ## Quick Start
 
@@ -213,6 +217,7 @@ require("github-pr-reviewer").setup({
 ```
 
 From the menu, press:
+
 - `r` - Start reviewing a PR (list all open PRs)
 - `l` - List PRs where you're requested as reviewer
 - `b` - Toggle review buffer (see all changed files)
@@ -228,12 +233,14 @@ From the menu, press:
 ### Quick Review Workflow (Using the Menu)
 
 1. **Open the menu and start a review:**
+
    ```vim
    :PR
    " Press 'r' to review a PR, or 'l' to see review requests
    ```
 
 2. **Browse changed files:**
+
    ```vim
    :PR
    " Press 'b' to open the review buffer
@@ -254,6 +261,7 @@ From the menu, press:
    - You can continue reviewing multiple files
 
 5. **Finish the review:**
+
    ```vim
    :PR
    " Press 'a' to approve (submits all pending comments)
@@ -312,6 +320,7 @@ Press `:PRReviewBuffer` or use `b` in the `:PR` menu to open an interactive file
 ```
 
 Features:
+
 - **Foldable directories**: Press `<CR>` on a directory to collapse/expand it
   - **▼** = Expanded directory (showing files)
   - **▶** = Collapsed directory (files hidden)
@@ -328,10 +337,12 @@ Features:
 The plugin includes built-in navigation that only works during PR review mode:
 
 **Hunk Navigation** (within a file):
+
 - `<C-j>` (default) - Jump to next hunk
 - `<C-k>` (default) - Jump to previous hunk
 
 **File Navigation** (between modified files):
+
 - `<C-l>` (default) - Go to next modified file
 - `<C-h>` (default) - Go to previous modified file
 - `<CR>` (default) - Mark file as viewed and jump to next file
@@ -343,11 +354,13 @@ All keybindings are configurable in setup and only activate during PR review mod
 Toggle between unified (inline) and split (side-by-side) diff view with `<C-v>` (default):
 
 **Unified View (Default)**:
+
 - Shows changes inline with diff highlighting
 - Deleted lines appear as virtual text above changes
 - Added/modified lines highlighted in green
 
 **Split View**:
+
 - Left window: Base version (before changes)
 - Right window: Current version (after changes)
 - Both windows in diff mode with synchronized scrolling
@@ -369,19 +382,23 @@ When reviewing a file with changes, you'll see three floating windows providing 
 ```
 
 **Left Float (Progress)**:
+
 - **Viewed status**: Shows if the current file has been marked as viewed
 - **Change progress**: Current change position (groups consecutive changed lines together)
 - **Mark as viewed**: Press `<CR>` to mark file as viewed and jump to next file
 
 **Middle Float (Stats)**:
+
 - **Stats**: +additions ~modifications -deletions
 - **Comments**: 💬 Number of posted PR comments in this file
 - **Pending**: 💭 Number of pending comments you've drafted
 
 **Right Float (Keymaps)**:
+
 - Shows available keyboard shortcuts for review mode
 
 **Toggle Floating Windows**:
+
 - Press `<C-r>` (default) to hide/show all three floating windows
 - Set `show_floats = false` in config to disable them by default
 - Useful when you want a cleaner view or need more screen space
@@ -399,6 +416,7 @@ One of the most efficient ways to review is using **pending comments**:
 7. Confirm to submit your review + all pending comments at once
 
 Benefits:
+
 - Draft your thoughts as you review without interrupting your flow
 - Review all your comments before submitting
 - Submit everything together as a cohesive review
@@ -407,22 +425,26 @@ Benefits:
 ### Viewing and Managing Comments
 
 **Add Comments:**
+
 - `:PRLineComment` - Add a review comment on the current line (submitted immediately)
 - `:PRPendingComment` - Add a pending comment (submitted with approval/rejection)
 - `:PRComment` - Add a general PR comment
 
 **View Comments:**
+
 - Comments appear as virtual text on lines automatically
 - `:PRReviewComment` - Show comments at cursor line in a popup
 - `:PRListAllComments` - Browse ALL comments with file preview
 
 **Manage Comments:**
+
 - `:PRReply` - Reply to a comment (cannot reply to pending comments)
 - `:PREditComment` - Edit your comment (works for both pending and posted)
 - `:PRDeleteComment` - Delete your comment
 - `:PRToggleReaction` - Add or remove an emoji reaction to a comment
 
 **React to Comments:**
+
 - Position cursor on a line with a comment
 - Use `:PRToggleReaction` or press `R` in the `:PR` menu
 - Select an emoji (👍 👎 😄 🎉 😕 ❤️ 🚀 👀)
@@ -430,6 +452,7 @@ Benefits:
 - Reactions appear inline next to comment indicators and in comment previews
 
 **List All Comments** (`:PRListAllComments`):
+
 - Shows both pending and posted comments
 - Includes author, file path, line number
 - **Telescope**: Full file preview with syntax highlighting and comment highlighted
@@ -462,6 +485,7 @@ When `show_inline_diff` is enabled, the plugin displays the diff directly in you
 - This works **without gitsigns**, using native Neovim extmarks
 
 Example visualization:
+
 ```
   - old line that was removed
   - another old line
@@ -576,6 +600,7 @@ Both plugins work seamlessly during PR review, letting you mark important files 
 ### LSP (Native Neovim LSP or nvim-lspconfig)
 
 Your LSP is fully functional during PR review:
+
 - `gd` - Go to definition
 - `gr` - Find references
 - `K` - Hover documentation
@@ -590,7 +615,7 @@ Set your preferred picker in the config:
 
 ```lua
 require("github-pr-reviewer").setup({
-  picker = "telescope",  -- or "fzf-lua" or "native"
+  picker = "telescope", -- or "fzf-lua" or "native"
 })
 ```
 
@@ -608,7 +633,7 @@ If you prefer to use gitsigns instead of the built-in inline diff:
 
 ```lua
 require("github-pr-reviewer").setup({
-  show_inline_diff = false,  -- Disable built-in diff, use gitsigns instead
+  show_inline_diff = false, -- Disable built-in diff, use gitsigns instead
 })
 
 require("gitsigns").setup({
@@ -616,8 +641,12 @@ require("gitsigns").setup({
 })
 
 -- Navigation keymaps
-vim.keymap.set("n", "]h", function() require("gitsigns").next_hunk() end)
-vim.keymap.set("n", "[h", function() require("gitsigns").prev_hunk() end)
+vim.keymap.set("n", "]h", function()
+  require("gitsigns").next_hunk()
+end)
+vim.keymap.set("n", "[h", function()
+  require("gitsigns").prev_hunk()
+end)
 ```
 
 ## How It Works
@@ -662,7 +691,7 @@ Ensure GitHub CLI is properly authenticated:
 
 ```bash
 gh auth status
-gh auth login  # if not authenticated
+gh auth login # if not authenticated
 ```
 
 ### "git fetch failed"

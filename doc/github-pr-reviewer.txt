@@ -4,7 +4,7 @@
 
 Author:  Otávio Schwanck dos Santos
 License: MIT
-Repository: https://github.com/otavioschwanck/github-pr-reviewer.nvim
+Repository: https://github.com/mosheavni/github-pr-reviewer.nvim
 
 ==============================================================================
 CONTENTS                                            *github-pr-reviewer-contents*
@@ -57,7 +57,7 @@ to review it.
 
 Using lazy.nvim: >lua
     {
-      "otavioschwanck/github-pr-reviewer.nvim",
+      "mosheavni/github-pr-reviewer.nvim",
       config = function()
         require("github-pr-reviewer").setup({
           -- options (see |github-pr-reviewer-config|)
@@ -68,7 +68,7 @@ Using lazy.nvim: >lua
 
 Using packer.nvim: >lua
     use {
-      "otavioschwanck/github-pr-reviewer.nvim",
+      "mosheavni/github-pr-reviewer.nvim",
       config = function()
         require("github-pr-reviewer").setup()
       end

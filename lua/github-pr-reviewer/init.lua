@@ -6,34 +6,34 @@ local ui = require("github-pr-reviewer.ui")
 
 M.config = {
   branch_prefix = "reviewing_",
-  picker = "native",              -- "native", "fzf-lua", "telescope"
-  open_files_on_review = true,    -- open modified files after starting review
-  show_comments = true,           -- show PR comments in buffers during review
-  show_icons = true,              -- show icons in UI elements
-  show_inline_diff = true,        -- show inline diff in buffers (old lines as virtual text)
-  show_floats = true,             -- show floating windows with info, stats and keymaps
-  debug = false,                  -- show debug messages
-  mark_as_viewed_key = "<CR>",    -- key to mark file as viewed and go to next file
-  next_hunk_key = "<C-j>",        -- key to jump to next hunk
-  prev_hunk_key = "<C-k>",        -- key to jump to previous hunk
-  next_file_key = "<C-l>",        -- key to go to next modified file
-  prev_file_key = "<C-h>",        -- key to go to previous modified file
+  picker = "native", -- "native", "fzf-lua", "telescope"
+  open_files_on_review = true, -- open modified files after starting review
+  show_comments = true, -- show PR comments in buffers during review
+  show_icons = true, -- show icons in UI elements
+  show_inline_diff = true, -- show inline diff in buffers (old lines as virtual text)
+  show_floats = true, -- show floating windows with info, stats and keymaps
+  debug = false, -- show debug messages
+  mark_as_viewed_key = "<CR>", -- key to mark file as viewed and go to next file
+  next_hunk_key = "<C-j>", -- key to jump to next hunk
+  prev_hunk_key = "<C-k>", -- key to jump to previous hunk
+  next_file_key = "<C-l>", -- key to go to next modified file
+  prev_file_key = "<C-h>", -- key to go to previous modified file
   diff_view_toggle_key = "<C-v>", -- toggle between unified and split diff view
-  toggle_floats_key = "<C-r>",    -- toggle floating windows visibility
+  toggle_floats_key = "<C-r>", -- toggle floating windows visibility
 
   -- Review buffer settings
   review_buffer = {
-    position = "left",            -- "left", "right", "top", "bottom"
-    width = 50,                   -- width for left/right
-    height = 20,                  -- height for top/bottom
-    group_by_directory = true,    -- group files by directory
-    sort_by = "path",             -- "path", "status", "changes"
-    filter_viewed_key = "fv",     -- filter: show only viewed
+    position = "left", -- "left", "right", "top", "bottom"
+    width = 50, -- width for left/right
+    height = 20, -- height for top/bottom
+    group_by_directory = true, -- group files by directory
+    sort_by = "path", -- "path", "status", "changes"
+    filter_viewed_key = "fv", -- filter: show only viewed
     filter_not_viewed_key = "fn", -- filter: show only not viewed
-    filter_all_key = "fa",        -- filter: show all
-    open_split_key = "s",         -- open file in horizontal split
-    open_vsplit_key = "v",        -- open file in vertical split
-    toggle_key = "<C-e>",         -- toggle review buffer open/close
+    filter_all_key = "fa", -- filter: show all
+    open_split_key = "s", -- open file in horizontal split
+    open_vsplit_key = "v", -- open file in vertical split
+    toggle_key = "<C-e>", -- toggle review buffer open/close
   },
 }
 
@@ -52,32 +52,32 @@ M._buffer_comments = {}
 M._buffer_changes = {}
 M._buffer_hunks = {}
 M._diff_view_mode = "unified" -- "unified" or "split"
-M._split_view_state = {}      -- tracks split view buffers and windows
+M._split_view_state = {} -- tracks split view buffers and windows
 M._buffer_stats = {}
 M._current_comment_float = {
-  win = nil,   -- Float window ID
-  buf = nil,   -- Float buffer ID
-  line = nil,  -- Line number the float is for
-  bufnr = nil  -- Source buffer the float is for
+  win = nil, -- Float window ID
+  buf = nil, -- Float buffer ID
+  line = nil, -- Line number the float is for
+  bufnr = nil, -- Source buffer the float is for
 }
 M._viewed_files = {}
-M._collapsed_dirs = {}         -- tracks which directories are collapsed in review buffer
+M._collapsed_dirs = {} -- tracks which directories are collapsed in review buffer
 M._local_pending_comments = {} -- Local storage for pending comments (not synced to GitHub yet)
-M._drafts = {}                 -- Draft comments being edited (auto-saved)
-M._float_win_general = nil     -- General info float (file x/total)
-M._float_win_buffer = nil      -- Buffer info float (hunks, stats, comments)
-M._float_win_keymaps = nil     -- Keymaps float
-M._buffer_jumped = {}          -- Track if we've already jumped to first change in buffer
-M._buffer_keymaps_saved = {}   -- Track if we've saved keymaps for this buffer
-M._opening_file = false        -- Prevent concurrent file opening operations
+M._drafts = {} -- Draft comments being edited (auto-saved)
+M._float_win_general = nil -- General info float (file x/total)
+M._float_win_buffer = nil -- Buffer info float (hunks, stats, comments)
+M._float_win_keymaps = nil -- Keymaps float
+M._buffer_jumped = {} -- Track if we've already jumped to first change in buffer
+M._buffer_keymaps_saved = {} -- Track if we've saved keymaps for this buffer
+M._opening_file = false -- Prevent concurrent file opening operations
 
 -- Review buffer state
-M._review_buffer = nil       -- Review buffer number
-M._review_window = nil       -- Review window ID
-M._review_files = {}         -- List of files with metadata
+M._review_buffer = nil -- Review buffer number
+M._review_window = nil -- Review window ID
+M._review_files = {} -- List of files with metadata
 M._review_files_ordered = {} -- Ordered list matching ReviewBuffer display order
-M._review_filter = "all"     -- Current filter: "all", "viewed", "not_viewed"
-M._review_sort = nil         -- Current sort (uses config default)
+M._review_filter = "all" -- Current filter: "all", "viewed", "not_viewed"
+M._review_sort = nil -- Current sort (uses config default)
 
 local function get_session_dir()
   local data_path = vim.fn.stdpath("data")
@@ -86,7 +86,7 @@ end
 
 local function get_session_file()
   local cwd = vim.fn.getcwd()
-  -- Convert path to safe filename: /home/otavio/Projetos/api -> review_home_otavio_Projetos_api
+  -- Convert path to safe filename: /home/moshe/Projetos/api -> review_home_moshe_Projets_api
   local safe_name = cwd:gsub("^/", ""):gsub("/", "_")
   return get_session_dir() .. "/review_" .. safe_name .. ".json"
 end
@@ -337,7 +337,9 @@ local function get_changed_lines_for_file(file_path, status, callback)
           if start_line then
             start_line = tonumber(start_line)
             count = tonumber(count) or 1
-            if count == 0 then count = 1 end
+            if count == 0 then
+              count = 1
+            end
             for i = 0, count - 1 do
               table.insert(all_lines, start_line + i)
             end
@@ -573,7 +575,6 @@ end
 
 -- Create split diff view (side by side)
 local function create_split_view(current_bufnr, file_path)
-
   -- Make sure we're in the file window, not the review window
   local current_win = vim.api.nvim_get_current_win()
 
@@ -801,7 +802,7 @@ function M.fix_vsplit()
 
     -- Clear all possible namespaces that might have stale highlights
     local bufnr = vim.api.nvim_get_current_buf()
-    vim.api.nvim_buf_clear_namespace(bufnr, -1, 0, -1)  -- -1 = all namespaces
+    vim.api.nvim_buf_clear_namespace(bufnr, -1, 0, -1) -- -1 = all namespaces
 
     -- Reload the file to clear internal Vim state
     vim.cmd("edit " .. vim.fn.fnameescape(file_path))
@@ -877,7 +878,7 @@ local function render_review_buffer()
 
   local lines = {}
   local highlights = {}
-  local file_map = {}          -- Maps line number to file
+  local file_map = {} -- Maps line number to file
   M._review_files_ordered = {} -- Reset ordered list
 
   -- Header
@@ -885,11 +886,19 @@ local function render_review_buffer()
   table.insert(lines, "═══ PR Review ═══")
   table.insert(lines, "")
   table.insert(lines, string.format("[%s] Toggle | [q] Close", cfg.toggle_key))
-  table.insert(lines,
-    string.format("Filters: [%s] All  [%s] Viewed  [%s] Not Viewed", cfg.filter_all_key, cfg.filter_viewed_key,
-      cfg.filter_not_viewed_key))
-  table.insert(lines,
-    string.format("Open: [<CR>] Current  [%s] Split  [%s] VSplit", cfg.open_split_key, cfg.open_vsplit_key))
+  table.insert(
+    lines,
+    string.format(
+      "Filters: [%s] All  [%s] Viewed  [%s] Not Viewed",
+      cfg.filter_all_key,
+      cfg.filter_viewed_key,
+      cfg.filter_not_viewed_key
+    )
+  )
+  table.insert(
+    lines,
+    string.format("Open: [<CR>] Current  [%s] Split  [%s] VSplit", cfg.open_split_key, cfg.open_vsplit_key)
+  )
   table.insert(lines, string.format("Sort: %s | Filter: %s", M._review_sort or cfg.sort_by, M._review_filter))
   table.insert(lines, "")
 
@@ -929,12 +938,12 @@ local function render_review_buffer()
           table.insert(M._review_files_ordered, file)
 
           local filename = file.path:match("[^/]+$")
-          local status_icon = file.status == "M" and "M" or
-              (file.status == "A" and "A" or (file.status == "D" and "D" or "N"))
-          local viewed_icon = file.viewed and (M.config.show_icons and "✓" or "[V]") or
-              (M.config.show_icons and "○" or "[ ]")
-          local stats_str = string.format("+%d ~%d -%d", file.stats.additions, file.stats.modifications,
-            file.stats.deletions)
+          local status_icon = file.status == "M" and "M"
+            or (file.status == "A" and "A" or (file.status == "D" and "D" or "N"))
+          local viewed_icon = file.viewed and (M.config.show_icons and "✓" or "[V]")
+            or (M.config.show_icons and "○" or "[ ]")
+          local stats_str =
+            string.format("+%d ~%d -%d", file.stats.additions, file.stats.modifications, file.stats.deletions)
 
           -- Add indicator for current file
           local current_indicator = ""
@@ -942,7 +951,8 @@ local function render_review_buffer()
             current_indicator = M.config.show_icons and " ➤" or " >"
           end
 
-          local line = string.format("  %s %s %s  %s%s", viewed_icon, status_icon, filename, stats_str, current_indicator)
+          local line =
+            string.format("  %s %s %s  %s%s", viewed_icon, status_icon, filename, stats_str, current_indicator)
           local line_idx = #lines + 1
           table.insert(lines, line)
           file_map[line_idx] = file
@@ -956,8 +966,10 @@ local function render_review_buffer()
             -- Highlight entire line for current file
             table.insert(highlights, { line = line_idx - 1, hl_group = "CursorLine" })
             -- Highlight filename with special color
-            table.insert(highlights,
-              { line = line_idx - 1, hl_group = "Search", start_col = filename_start, end_col = filename_end })
+            table.insert(
+              highlights,
+              { line = line_idx - 1, hl_group = "Search", start_col = filename_start, end_col = filename_end }
+            )
           else
             -- Apply viewed dimming
             if file.viewed then
@@ -980,12 +992,12 @@ local function render_review_buffer()
       -- Add to ordered list
       table.insert(M._review_files_ordered, file)
 
-      local status_icon = file.status == "M" and "M" or
-          (file.status == "A" and "A" or (file.status == "D" and "D" or "N"))
-      local viewed_icon = file.viewed and (M.config.show_icons and "✓" or "[V]") or
-          (M.config.show_icons and "○" or "[ ]")
-      local stats_str = string.format("+%d ~%d -%d", file.stats.additions, file.stats.modifications, file.stats
-        .deletions)
+      local status_icon = file.status == "M" and "M"
+        or (file.status == "A" and "A" or (file.status == "D" and "D" or "N"))
+      local viewed_icon = file.viewed and (M.config.show_icons and "✓" or "[V]")
+        or (M.config.show_icons and "○" or "[ ]")
+      local stats_str =
+        string.format("+%d ~%d -%d", file.stats.additions, file.stats.modifications, file.stats.deletions)
 
       -- Add indicator for current file
       local current_indicator = ""
@@ -1007,8 +1019,10 @@ local function render_review_buffer()
         -- Highlight entire line for current file
         table.insert(highlights, { line = line_idx - 1, hl_group = "CursorLine" })
         -- Highlight filepath with special color
-        table.insert(highlights,
-          { line = line_idx - 1, hl_group = "Search", start_col = filepath_start, end_col = filepath_end })
+        table.insert(
+          highlights,
+          { line = line_idx - 1, hl_group = "Search", start_col = filepath_start, end_col = filepath_end }
+        )
       else
         -- Apply viewed dimming
         if file.viewed then
@@ -1200,7 +1214,7 @@ local function open_file_from_review(split_type)
         local file_path = get_relative_path(new_bufnr)
         if file_path then
           M._diff_view_mode = "unified" -- Reset to unified first
-          M.toggle_diff_view()          -- Then toggle to split
+          M.toggle_diff_view() -- Then toggle to split
         end
       end
       M._opening_file = false
@@ -1226,8 +1240,13 @@ local function setup_review_buffer_keymaps(bufnr)
   end
 
   -- Open file - using nvim_buf_set_keymap for compatibility
-  vim.api.nvim_buf_set_keymap(bufnr, "n", "<CR>", [[<Cmd>lua _G._pr_reviewer_open_file()<CR>]],
-    { noremap = true, silent = true, nowait = true })
+  vim.api.nvim_buf_set_keymap(
+    bufnr,
+    "n",
+    "<CR>",
+    [[<Cmd>lua _G._pr_reviewer_open_file()<CR>]],
+    { noremap = true, silent = true, nowait = true }
+  )
 
   vim.keymap.set("n", cfg.open_split_key, function()
     open_file_from_review("split")
@@ -1237,12 +1256,15 @@ local function setup_review_buffer_keymaps(bufnr)
   end, { buffer = bufnr, silent = true, noremap = true, nowait = true, desc = "Open file in vsplit" })
 
   -- Filters
-  vim.keymap.set("n", cfg.filter_all_key, function() set_review_filter("all") end,
-    { buffer = bufnr, silent = true, noremap = true, nowait = true, desc = "Filter: all files" })
-  vim.keymap.set("n", cfg.filter_viewed_key, function() set_review_filter("viewed") end,
-    { buffer = bufnr, silent = true, noremap = true, nowait = true, desc = "Filter: viewed files" })
-  vim.keymap.set("n", cfg.filter_not_viewed_key, function() set_review_filter("not_viewed") end,
-    { buffer = bufnr, silent = true, noremap = true, nowait = true, desc = "Filter: not viewed files" })
+  vim.keymap.set("n", cfg.filter_all_key, function()
+    set_review_filter("all")
+  end, { buffer = bufnr, silent = true, noremap = true, nowait = true, desc = "Filter: all files" })
+  vim.keymap.set("n", cfg.filter_viewed_key, function()
+    set_review_filter("viewed")
+  end, { buffer = bufnr, silent = true, noremap = true, nowait = true, desc = "Filter: viewed files" })
+  vim.keymap.set("n", cfg.filter_not_viewed_key, function()
+    set_review_filter("not_viewed")
+  end, { buffer = bufnr, silent = true, noremap = true, nowait = true, desc = "Filter: not viewed files" })
 
   -- Note: We DON'T register mark_as_viewed_key here because:
   -- 1. In ReviewBuffer, <CR> should open files, not mark them as viewed
@@ -1253,7 +1275,9 @@ local function setup_review_buffer_keymaps(bufnr)
   vim.keymap.set("n", "m", function()
     local buf = vim.api.nvim_get_current_buf()
     local file_map = vim.b[buf].pr_file_map
-    if not file_map or type(file_map) ~= "table" then return end
+    if not file_map or type(file_map) ~= "table" then
+      return
+    end
 
     local line = vim.api.nvim_win_get_cursor(0)[1]
     local file = file_map[line]
@@ -1422,8 +1446,11 @@ local function setup_global_review_keymaps()
     if vim.g.pr_review_number then
       M.toggle_review_buffer()
     else
-      vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(M.config.review_buffer.toggle_key, true, false, true), "n",
-        false)
+      vim.api.nvim_feedkeys(
+        vim.api.nvim_replace_termcodes(M.config.review_buffer.toggle_key, true, false, true),
+        "n",
+        false
+      )
     end
   end, { desc = "Toggle review buffer (PR review mode)" })
 end
@@ -1567,20 +1594,20 @@ update_changes_float = function()
 
   -- Create the 3 floats stacked vertically
   -- Use red border for deleted files
-  local border_hl = file_status == "D" and "Normal:DiagnosticError,FloatBorder:DiagnosticError" or
-      "Normal:DiagnosticInfo,FloatBorder:DiagnosticInfo"
+  local border_hl = file_status == "D" and "Normal:DiagnosticError,FloatBorder:DiagnosticError"
+    or "Normal:DiagnosticInfo,FloatBorder:DiagnosticInfo"
   M._float_win_general = create_or_update_float(M._float_win_general, general_lines, 0, border_hl)
 
   local general_height = #general_lines + 2 -- +2 for border
-  local buffer_hl = file_status == "D" and "Normal:DiagnosticError,FloatBorder:DiagnosticError" or
-      "Normal:DiagnosticHint,FloatBorder:DiagnosticHint"
+  local buffer_hl = file_status == "D" and "Normal:DiagnosticError,FloatBorder:DiagnosticError"
+    or "Normal:DiagnosticHint,FloatBorder:DiagnosticHint"
   M._float_win_buffer = create_or_update_float(M._float_win_buffer, buffer_lines, general_height, buffer_hl)
 
   local buffer_height = #buffer_lines + 2
-  local keymap_hl = file_status == "D" and "Normal:DiagnosticError,FloatBorder:DiagnosticError" or
-      "Normal:DiagnosticWarn,FloatBorder:DiagnosticWarn"
-  M._float_win_keymaps = create_or_update_float(M._float_win_keymaps, keymap_lines, general_height + buffer_height,
-    keymap_hl)
+  local keymap_hl = file_status == "D" and "Normal:DiagnosticError,FloatBorder:DiagnosticError"
+    or "Normal:DiagnosticWarn,FloatBorder:DiagnosticWarn"
+  M._float_win_keymaps =
+    create_or_update_float(M._float_win_keymaps, keymap_lines, general_height + buffer_height, keymap_hl)
 end
 
 function M.mark_file_as_viewed_and_next()
@@ -1739,7 +1766,7 @@ function M.next_file()
         local file_path = get_relative_path(bufnr)
         if file_path then
           M._diff_view_mode = "unified" -- Reset to unified first
-          M.toggle_diff_view()          -- Then toggle to split
+          M.toggle_diff_view() -- Then toggle to split
         end
       end
       M._opening_file = false
@@ -1804,7 +1831,7 @@ function M.prev_file()
         local file_path = get_relative_path(bufnr)
         if file_path then
           M._diff_view_mode = "unified" -- Reset to unified first
-          M.toggle_diff_view()          -- Then toggle to split
+          M.toggle_diff_view() -- Then toggle to split
         end
       end
       M._opening_file = false
@@ -1861,8 +1888,8 @@ local function update_hunk_navigation_hints()
   local hint_text = ""
 
   -- Check if cursor is actually inside the current hunk
-  local cursor_in_hunk = cursor_line >= hunks[current_hunk_idx].start_line and
-                         cursor_line <= hunks[current_hunk_idx].end_line
+  local cursor_in_hunk = cursor_line >= hunks[current_hunk_idx].start_line
+    and cursor_line <= hunks[current_hunk_idx].end_line
 
   if cursor_in_hunk and #hunks > 1 then
     hint_text = string.format("  (%d/%d)", current_hunk_idx, #hunks)
@@ -1886,7 +1913,13 @@ local function update_hunk_navigation_hints()
         end
       else
         -- In unified mode, check extmarks for line highlight
-        local extmarks = vim.api.nvim_buf_get_extmarks(bufnr, diff_ns_id, { line_idx, 0 }, { line_idx, -1 }, { details = true })
+        local extmarks = vim.api.nvim_buf_get_extmarks(
+          bufnr,
+          diff_ns_id,
+          { line_idx, 0 },
+          { line_idx, -1 },
+          { details = true }
+        )
 
         for _, mark in ipairs(extmarks) do
           local details = mark[4]
@@ -1967,12 +2000,24 @@ local function load_changes_for_buffer(bufnr)
       if not M._buffer_keymaps_saved[bufnr] then
         vim.keymap.set("n", M.config.next_hunk_key, M.next_hunk, { buffer = bufnr, desc = "Jump to next hunk" })
         vim.keymap.set("n", M.config.prev_hunk_key, M.prev_hunk, { buffer = bufnr, desc = "Jump to previous hunk" })
-        vim.keymap.set("n", M.config.mark_as_viewed_key, M.mark_file_as_viewed_and_next,
-          { buffer = bufnr, desc = "Mark as viewed and next" })
-        vim.keymap.set("n", M.config.diff_view_toggle_key, M.toggle_diff_view,
-          { buffer = bufnr, desc = "Toggle unified/split diff view" })
-        vim.keymap.set("n", M.config.toggle_floats_key, M.toggle_floats,
-          { buffer = bufnr, desc = "Toggle floating windows" })
+        vim.keymap.set(
+          "n",
+          M.config.mark_as_viewed_key,
+          M.mark_file_as_viewed_and_next,
+          { buffer = bufnr, desc = "Mark as viewed and next" }
+        )
+        vim.keymap.set(
+          "n",
+          M.config.diff_view_toggle_key,
+          M.toggle_diff_view,
+          { buffer = bufnr, desc = "Toggle unified/split diff view" }
+        )
+        vim.keymap.set(
+          "n",
+          M.config.toggle_floats_key,
+          M.toggle_floats,
+          { buffer = bufnr, desc = "Toggle floating windows" }
+        )
         M._buffer_keymaps_saved[bufnr] = true
       end
 
@@ -2134,7 +2179,13 @@ local function display_comments(bufnr, comments)
         end
       else
         -- In unified mode, check extmarks for line highlight
-        local extmarks = vim.api.nvim_buf_get_extmarks(bufnr, diff_ns_id, { line_idx, 0 }, { line_idx, -1 }, { details = true })
+        local extmarks = vim.api.nvim_buf_get_extmarks(
+          bufnr,
+          diff_ns_id,
+          { line_idx, 0 },
+          { line_idx, -1 },
+          { details = true }
+        )
 
         for _, mark in ipairs(extmarks) do
           local details = mark[4]
@@ -2231,7 +2282,7 @@ function M.show_comments_at_cursor()
     win = float_win,
     buf = float_buf,
     line = cursor_line,
-    bufnr = bufnr
+    bufnr = bufnr,
   }
 end
 
@@ -2441,13 +2492,17 @@ function M.load_comments_for_buffer(bufnr, force_reload, callback)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
 
   if not M.config.show_comments then
-    if callback then callback() end
+    if callback then
+      callback()
+    end
     return
   end
 
   local pr_number = vim.g.pr_review_number
   if not pr_number then
-    if callback then callback() end
+    if callback then
+      callback()
+    end
     return
   end
 
@@ -2460,7 +2515,9 @@ function M.load_comments_for_buffer(bufnr, force_reload, callback)
   -- Get regular comments
   github.get_comments_for_file(pr_number, file_path, function(comments, err)
     if err then
-      if callback then callback() end
+      if callback then
+        callback()
+      end
       return
     end
 
@@ -2471,15 +2528,22 @@ function M.load_comments_for_buffer(bufnr, force_reload, callback)
 
     -- Also get pending comments and merge them
     github.get_pending_review_comments(pr_number, function(pending_comments, pending_err)
-      debug_log(string.format("Debug load: Got %d pending comments, err=%s", #(pending_comments or {}),
-        pending_err or "nil"))
+      debug_log(
+        string.format("Debug load: Got %d pending comments, err=%s", #(pending_comments or {}), pending_err or "nil")
+      )
 
       if not pending_err and pending_comments then
         -- Filter pending comments for this file and mark them as pending
         local added_count = 0
         for _, pc in ipairs(pending_comments) do
-          debug_log(string.format("Debug load: Pending comment path=%s, file_path=%s, line=%s", pc.path or "nil",
-            file_path, tostring(pc.line)))
+          debug_log(
+            string.format(
+              "Debug load: Pending comment path=%s, file_path=%s, line=%s",
+              pc.path or "nil",
+              file_path,
+              tostring(pc.line)
+            )
+          )
           if pc.path == file_path then
             pc.is_pending = true
             pc.body = pc.body .. " (pending)"
@@ -2506,7 +2570,9 @@ function M.load_comments_for_buffer(bufnr, force_reload, callback)
             display_comments(bufnr, comments)
           end
           -- Call callback after display is complete
-          if callback then callback() end
+          if callback then
+            callback()
+          end
         end, 50)
       else
         M._buffer_comments[bufnr] = nil
@@ -2515,7 +2581,9 @@ function M.load_comments_for_buffer(bufnr, force_reload, callback)
             vim.api.nvim_buf_clear_namespace(bufnr, ns_id, 0, -1)
           end
           -- Call callback after clearing
-          if callback then callback() end
+          if callback then
+            callback()
+          end
         end)
       end
     end)
@@ -2573,13 +2641,8 @@ local function input_multiline(prompt, callback, initial_text, draft_info)
 
   -- Check if there's a saved draft
   if draft_info and pr_number then
-    local draft_text = get_draft(
-      pr_number,
-      draft_info.file_path,
-      draft_info.line,
-      draft_info.action,
-      draft_info.comment_id
-    )
+    local draft_text =
+      get_draft(pr_number, draft_info.file_path, draft_info.line, draft_info.action, draft_info.comment_id)
     if draft_text and (not initial_text or initial_text == "") then
       initial_text = draft_text
       prompt = prompt .. " [DRAFT RESTORED]"
@@ -2622,14 +2685,7 @@ local function input_multiline(prompt, callback, initial_text, draft_info)
       local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
       local text = table.concat(lines, "\n")
       if text and text ~= "" then
-        save_draft(
-          pr_number,
-          draft_info.file_path,
-          draft_info.line,
-          draft_info.action,
-          draft_info.comment_id,
-          text
-        )
+        save_draft(pr_number, draft_info.file_path, draft_info.line, draft_info.action, draft_info.comment_id, text)
       end
     end
   end
@@ -2647,13 +2703,7 @@ local function input_multiline(prompt, callback, initial_text, draft_info)
 
     -- Clear draft on successful submit
     if draft_info and pr_number and text ~= "" then
-      clear_draft(
-        pr_number,
-        draft_info.file_path,
-        draft_info.line,
-        draft_info.action,
-        draft_info.comment_id
-      )
+      clear_draft(pr_number, draft_info.file_path, draft_info.line, draft_info.action, draft_info.comment_id)
     end
 
     vim.api.nvim_win_close(win, true)
@@ -2681,7 +2731,7 @@ local function input_multiline(prompt, callback, initial_text, draft_info)
 
   -- Enter insert mode automatically
   if has_initial_text then
-    vim.cmd("startinsert!")  -- Append at end of line
+    vim.cmd("startinsert!") -- Append at end of line
   else
     vim.cmd("startinsert")
   end
@@ -2711,7 +2761,10 @@ local function show_pending_comments_preview(pending_comments, callback)
     table.insert(lines, "")
   end
 
-  table.insert(lines, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+  table.insert(
+    lines,
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  )
   table.insert(lines, "")
   table.insert(lines, "Press 'y' to proceed, 'n' to cancel, 'q' to cancel")
 
@@ -2737,8 +2790,11 @@ local function show_pending_comments_preview(pending_comments, callback)
     col = col,
     style = "minimal",
     border = "rounded",
-    title = string.format(" %d Pending Comment%s - y: proceed | n/q: cancel ", #pending_comments,
-      #pending_comments > 1 and "s" or ""),
+    title = string.format(
+      " %d Pending Comment%s - y: proceed | n/q: cancel ",
+      #pending_comments,
+      #pending_comments > 1 and "s" or ""
+    ),
     title_pos = "center",
   })
 
@@ -2756,10 +2812,18 @@ local function show_pending_comments_preview(pending_comments, callback)
     callback(proceed)
   end
 
-  vim.keymap.set("n", "y", function() close_and_respond(true) end, { buffer = buf, nowait = true })
-  vim.keymap.set("n", "n", function() close_and_respond(false) end, { buffer = buf, nowait = true })
-  vim.keymap.set("n", "q", function() close_and_respond(false) end, { buffer = buf, nowait = true })
-  vim.keymap.set("n", "<Esc>", function() close_and_respond(false) end, { buffer = buf, nowait = true })
+  vim.keymap.set("n", "y", function()
+    close_and_respond(true)
+  end, { buffer = buf, nowait = true })
+  vim.keymap.set("n", "n", function()
+    close_and_respond(false)
+  end, { buffer = buf, nowait = true })
+  vim.keymap.set("n", "q", function()
+    close_and_respond(false)
+  end, { buffer = buf, nowait = true })
+  vim.keymap.set("n", "<Esc>", function()
+    close_and_respond(false)
+  end, { buffer = buf, nowait = true })
 end
 
 function M.approve_pr()
@@ -2779,46 +2843,53 @@ function M.approve_pr()
       return
     end
 
-    input_multiline("Approval comment (optional)", function(body)
-      vim.notify("Approving PR #" .. pr_number .. "...", vim.log.levels.INFO)
+    input_multiline(
+      "Approval comment (optional)",
+      function(body)
+        vim.notify("Approving PR #" .. pr_number .. "...", vim.log.levels.INFO)
 
-      -- If there are pending comments, submit review with comments using API
-      if pending_comments and #pending_comments > 0 then
-        github.submit_review_with_comments(pr_number, "APPROVE", body, pending_comments, function(ok, err)
-          if ok then
-            -- Clear local pending comments after successful submission
-            M._local_pending_comments[pr_number] = nil
-            save_session()
+        -- If there are pending comments, submit review with comments using API
+        if pending_comments and #pending_comments > 0 then
+          github.submit_review_with_comments(pr_number, "APPROVE", body, pending_comments, function(ok, err)
+            if ok then
+              -- Clear local pending comments after successful submission
+              M._local_pending_comments[pr_number] = nil
+              save_session()
 
-            -- Reload all open buffers to remove PENDING markers
-            for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-              if vim.api.nvim_buf_is_valid(buf) and M._buffer_comments[buf] then
-                M.load_comments_for_buffer(buf, true)
+              -- Reload all open buffers to remove PENDING markers
+              for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+                if vim.api.nvim_buf_is_valid(buf) and M._buffer_comments[buf] then
+                  M.load_comments_for_buffer(buf, true)
+                end
               end
-            end
 
-            vim.notify(string.format("✅ PR #%d approved with %d comments!", pr_number, #pending_comments),
-              vim.log.levels.INFO)
-          else
-            vim.notify("❌ Failed to approve: " .. (err or "unknown"), vim.log.levels.ERROR)
-          end
-        end)
-      else
-        -- No pending comments, use simple approve
-        github.approve_pr(pr_number, body, function(ok, err)
-          if ok then
-            vim.notify("✅ PR #" .. pr_number .. " approved!", vim.log.levels.INFO)
-          else
-            vim.notify("❌ Failed to approve: " .. (err or "unknown"), vim.log.levels.ERROR)
-          end
-        end)
-      end
-    end, nil, {
-      pr_number = pr_number,
-      file_path = nil,
-      line = nil,
-      action = "approve_pr",
-    })
+              vim.notify(
+                string.format("✅ PR #%d approved with %d comments!", pr_number, #pending_comments),
+                vim.log.levels.INFO
+              )
+            else
+              vim.notify("❌ Failed to approve: " .. (err or "unknown"), vim.log.levels.ERROR)
+            end
+          end)
+        else
+          -- No pending comments, use simple approve
+          github.approve_pr(pr_number, body, function(ok, err)
+            if ok then
+              vim.notify("✅ PR #" .. pr_number .. " approved!", vim.log.levels.INFO)
+            else
+              vim.notify("❌ Failed to approve: " .. (err or "unknown"), vim.log.levels.ERROR)
+            end
+          end)
+        end
+      end,
+      nil,
+      {
+        pr_number = pr_number,
+        file_path = nil,
+        line = nil,
+        action = "approve_pr",
+      }
+    )
   end)
 end
 
@@ -2839,50 +2910,57 @@ function M.request_changes()
       return
     end
 
-    input_multiline("Reason for requesting changes (required by GitHub)", function(body)
-      if not body or body:match("^%s*$") then
-        vim.notify("❌ Reason is required when requesting changes (GitHub requirement)", vim.log.levels.ERROR)
-        return
-      end
-      vim.notify("Requesting changes on PR #" .. pr_number .. "...", vim.log.levels.INFO)
+    input_multiline(
+      "Reason for requesting changes (required by GitHub)",
+      function(body)
+        if not body or body:match("^%s*$") then
+          vim.notify("❌ Reason is required when requesting changes (GitHub requirement)", vim.log.levels.ERROR)
+          return
+        end
+        vim.notify("Requesting changes on PR #" .. pr_number .. "...", vim.log.levels.INFO)
 
-      -- If there are pending comments, submit review with comments using API
-      if pending_comments and #pending_comments > 0 then
-        github.submit_review_with_comments(pr_number, "REQUEST_CHANGES", body, pending_comments, function(ok, err)
-          if ok then
-            -- Clear local pending comments after successful submission
-            M._local_pending_comments[pr_number] = nil
-            save_session()
+        -- If there are pending comments, submit review with comments using API
+        if pending_comments and #pending_comments > 0 then
+          github.submit_review_with_comments(pr_number, "REQUEST_CHANGES", body, pending_comments, function(ok, err)
+            if ok then
+              -- Clear local pending comments after successful submission
+              M._local_pending_comments[pr_number] = nil
+              save_session()
 
-            -- Reload all open buffers to remove PENDING markers
-            for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-              if vim.api.nvim_buf_is_valid(buf) and M._buffer_comments[buf] then
-                M.load_comments_for_buffer(buf, true)
+              -- Reload all open buffers to remove PENDING markers
+              for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+                if vim.api.nvim_buf_is_valid(buf) and M._buffer_comments[buf] then
+                  M.load_comments_for_buffer(buf, true)
+                end
               end
-            end
 
-            vim.notify(string.format("✅ Requested changes on PR #%d with %d comments", pr_number, #pending_comments),
-              vim.log.levels.INFO)
-          else
-            vim.notify("❌ Failed to request changes: " .. (err or "unknown"), vim.log.levels.ERROR)
-          end
-        end)
-      else
-        -- No pending comments, use simple request changes
-        github.request_changes(pr_number, body, function(ok, err)
-          if ok then
-            vim.notify("✅ Requested changes on PR #" .. pr_number, vim.log.levels.INFO)
-          else
-            vim.notify("❌ Failed to request changes: " .. (err or "unknown"), vim.log.levels.ERROR)
-          end
-        end)
-      end
-    end, nil, {
-      pr_number = pr_number,
-      file_path = nil,
-      line = nil,
-      action = "request_changes",
-    })
+              vim.notify(
+                string.format("✅ Requested changes on PR #%d with %d comments", pr_number, #pending_comments),
+                vim.log.levels.INFO
+              )
+            else
+              vim.notify("❌ Failed to request changes: " .. (err or "unknown"), vim.log.levels.ERROR)
+            end
+          end)
+        else
+          -- No pending comments, use simple request changes
+          github.request_changes(pr_number, body, function(ok, err)
+            if ok then
+              vim.notify("✅ Requested changes on PR #" .. pr_number, vim.log.levels.INFO)
+            else
+              vim.notify("❌ Failed to request changes: " .. (err or "unknown"), vim.log.levels.ERROR)
+            end
+          end)
+        end
+      end,
+      nil,
+      {
+        pr_number = pr_number,
+        file_path = nil,
+        line = nil,
+        action = "request_changes",
+      }
+    )
   end)
 end
 
@@ -2894,39 +2972,31 @@ function M.merge_pr()
   end
 
   -- Strategy selection
-  vim.ui.select(
-    { "squash", "merge", "rebase" },
-    { prompt = "Select merge strategy:" },
-    function(strategy)
-      if not strategy then
+  vim.ui.select({ "squash", "merge", "rebase" }, { prompt = "Select merge strategy:" }, function(strategy)
+    if not strategy then
+      return
+    end
+
+    -- Delete branch confirmation
+    vim.ui.select({ "Yes", "No" }, { prompt = "Delete branch after merge?" }, function(delete_choice)
+      if not delete_choice then
         return
       end
 
-      -- Delete branch confirmation
-      vim.ui.select(
-        { "Yes", "No" },
-        { prompt = "Delete branch after merge?" },
-        function(delete_choice)
-          if not delete_choice then
-            return
-          end
+      local delete_branch = delete_choice == "Yes"
+      vim.notify("Merging PR #" .. pr_number .. " with " .. strategy .. "...", vim.log.levels.INFO)
 
-          local delete_branch = delete_choice == "Yes"
-          vim.notify("Merging PR #" .. pr_number .. " with " .. strategy .. "...", vim.log.levels.INFO)
-
-          github.merge_pr(pr_number, strategy, delete_branch, function(ok, err)
-            if ok then
-              vim.notify("PR #" .. pr_number .. " merged successfully!", vim.log.levels.INFO)
-              -- Auto-cleanup review state after successful merge
-              M.cleanup_review_branch()
-            else
-              vim.notify("Failed to merge PR: " .. (err or "unknown error"), vim.log.levels.ERROR)
-            end
-          end)
+      github.merge_pr(pr_number, strategy, delete_branch, function(ok, err)
+        if ok then
+          vim.notify("PR #" .. pr_number .. " merged successfully!", vim.log.levels.INFO)
+          -- Auto-cleanup review state after successful merge
+          M.cleanup_review_branch()
+        else
+          vim.notify("Failed to merge PR: " .. (err or "unknown error"), vim.log.levels.ERROR)
         end
-      )
-    end
-  )
+      end)
+    end)
+  end)
 end
 
 function M.submit_pending_comments()
@@ -2951,35 +3021,42 @@ function M.submit_pending_comments()
       return
     end
 
-    input_multiline("Optional comment for review (can be empty)", function(body)
-      vim.notify(string.format("Submitting %d pending comment(s)...", #pending_comments), vim.log.levels.INFO)
+    input_multiline(
+      "Optional comment for review (can be empty)",
+      function(body)
+        vim.notify(string.format("Submitting %d pending comment(s)...", #pending_comments), vim.log.levels.INFO)
 
-      -- Submit review with COMMENT event (not APPROVE or REQUEST_CHANGES)
-      github.submit_review_with_comments(pr_number, "COMMENT", body or "", pending_comments, function(ok, err)
-        if ok then
-          -- Clear local pending comments after successful submission
-          M._local_pending_comments[pr_number] = nil
-          save_session()
+        -- Submit review with COMMENT event (not APPROVE or REQUEST_CHANGES)
+        github.submit_review_with_comments(pr_number, "COMMENT", body or "", pending_comments, function(ok, err)
+          if ok then
+            -- Clear local pending comments after successful submission
+            M._local_pending_comments[pr_number] = nil
+            save_session()
 
-          -- Reload all open buffers to remove PENDING markers
-          for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-            if vim.api.nvim_buf_is_valid(buf) and M._buffer_comments[buf] then
-              M.load_comments_for_buffer(buf, true)
+            -- Reload all open buffers to remove PENDING markers
+            for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+              if vim.api.nvim_buf_is_valid(buf) and M._buffer_comments[buf] then
+                M.load_comments_for_buffer(buf, true)
+              end
             end
-          end
 
-          vim.notify(string.format("✅ Submitted %d comment(s) successfully!", #pending_comments),
-            vim.log.levels.INFO)
-        else
-          vim.notify("❌ Failed to submit comments: " .. (err or "unknown"), vim.log.levels.ERROR)
-        end
-      end)
-    end, nil, {
-      pr_number = pr_number,
-      file_path = nil,
-      line = nil,
-      action = "submit_pending",
-    })
+            vim.notify(
+              string.format("✅ Submitted %d comment(s) successfully!", #pending_comments),
+              vim.log.levels.INFO
+            )
+          else
+            vim.notify("❌ Failed to submit comments: " .. (err or "unknown"), vim.log.levels.ERROR)
+          end
+        end)
+      end,
+      nil,
+      {
+        pr_number = pr_number,
+        file_path = nil,
+        line = nil,
+        action = "submit_pending",
+      }
+    )
   end)
 end
 
@@ -2990,24 +3067,29 @@ function M.add_comment()
     return
   end
 
-  input_multiline("PR Comment", function(body)
-    if not body then
-      return
-    end
-    vim.notify("Adding comment...", vim.log.levels.INFO)
-    github.add_pr_comment(pr_number, body, function(ok, err)
-      if ok then
-        vim.notify("✅ Comment added to PR #" .. pr_number, vim.log.levels.INFO)
-      else
-        vim.notify("❌ Failed to add comment: " .. (err or "unknown"), vim.log.levels.ERROR)
+  input_multiline(
+    "PR Comment",
+    function(body)
+      if not body then
+        return
       end
-    end)
-  end, nil, {
-    pr_number = pr_number,
-    file_path = nil,
-    line = nil,
-    action = "add_pr_comment",
-  })
+      vim.notify("Adding comment...", vim.log.levels.INFO)
+      github.add_pr_comment(pr_number, body, function(ok, err)
+        if ok then
+          vim.notify("✅ Comment added to PR #" .. pr_number, vim.log.levels.INFO)
+        else
+          vim.notify("❌ Failed to add comment: " .. (err or "unknown"), vim.log.levels.ERROR)
+        end
+      end)
+    end,
+    nil,
+    {
+      pr_number = pr_number,
+      file_path = nil,
+      line = nil,
+      action = "add_pr_comment",
+    }
+  )
 end
 
 -- Build a comment thread by following in_reply_to_id
@@ -3092,13 +3174,7 @@ local function input_comment_with_context(target_comment, all_comments, prompt_t
   -- Check if there's a saved draft
   local draft_text = nil
   if draft_info and pr_number then
-    draft_text = get_draft(
-      pr_number,
-      draft_info.file_path,
-      draft_info.line,
-      draft_info.action,
-      draft_info.comment_id
-    )
+    draft_text = get_draft(pr_number, draft_info.file_path, draft_info.line, draft_info.action, draft_info.comment_id)
     if draft_text then
       prompt_title = prompt_title .. " [DRAFT RESTORED]"
     end
@@ -3197,14 +3273,7 @@ local function input_comment_with_context(target_comment, all_comments, prompt_t
 
       local text = table.concat(comment_lines, "\n"):gsub("^%s+", ""):gsub("%s+$", "")
       if text and text ~= "" then
-        save_draft(
-          pr_number,
-          draft_info.file_path,
-          draft_info.line,
-          draft_info.action,
-          draft_info.comment_id,
-          text
-        )
+        save_draft(pr_number, draft_info.file_path, draft_info.line, draft_info.action, draft_info.comment_id, text)
       end
     end
   end
@@ -3234,13 +3303,7 @@ local function input_comment_with_context(target_comment, all_comments, prompt_t
 
     -- Clear draft on successful submit
     if draft_info and pr_number and text ~= "" then
-      clear_draft(
-        pr_number,
-        draft_info.file_path,
-        draft_info.line,
-        draft_info.action,
-        draft_info.comment_id
-      )
+      clear_draft(pr_number, draft_info.file_path, draft_info.line, draft_info.action, draft_info.comment_id)
     end
 
     vim.api.nvim_win_close(win, true)
@@ -3279,7 +3342,7 @@ local function input_comment_with_context(target_comment, all_comments, prompt_t
 
   -- Enter insert mode automatically
   if draft_text then
-    vim.cmd("startinsert!")  -- Append at end of line
+    vim.cmd("startinsert!") -- Append at end of line
   else
     vim.cmd("startinsert")
   end
@@ -3383,13 +3446,7 @@ local function input_reply_with_context(target_comment, all_comments, callback, 
   -- Check if there's a saved draft
   local draft_text = nil
   if draft_info and pr_number then
-    draft_text = get_draft(
-      pr_number,
-      draft_info.file_path,
-      draft_info.line,
-      draft_info.action,
-      draft_info.comment_id
-    )
+    draft_text = get_draft(pr_number, draft_info.file_path, draft_info.line, draft_info.action, draft_info.comment_id)
     if draft_text then
       prompt_title = prompt_title .. " [DRAFT RESTORED]"
     end
@@ -3484,14 +3541,7 @@ local function input_reply_with_context(target_comment, all_comments, callback, 
 
       local text = table.concat(reply_lines, "\n"):gsub("^%s+", ""):gsub("%s+$", "")
       if text and text ~= "" then
-        save_draft(
-          pr_number,
-          draft_info.file_path,
-          draft_info.line,
-          draft_info.action,
-          draft_info.comment_id,
-          text
-        )
+        save_draft(pr_number, draft_info.file_path, draft_info.line, draft_info.action, draft_info.comment_id, text)
       end
     end
   end
@@ -3521,13 +3571,7 @@ local function input_reply_with_context(target_comment, all_comments, callback, 
 
     -- Clear draft on successful submit
     if draft_info and pr_number and text ~= "" then
-      clear_draft(
-        pr_number,
-        draft_info.file_path,
-        draft_info.line,
-        draft_info.action,
-        draft_info.comment_id
-      )
+      clear_draft(pr_number, draft_info.file_path, draft_info.line, draft_info.action, draft_info.comment_id)
     end
 
     vim.api.nvim_win_close(win, true)
@@ -3566,7 +3610,7 @@ local function input_reply_with_context(target_comment, all_comments, callback, 
 
   -- Enter insert mode automatically
   if draft_text then
-    vim.cmd("startinsert!")  -- Append at end of line
+    vim.cmd("startinsert!") -- Append at end of line
   else
     vim.cmd("startinsert")
   end
@@ -3615,12 +3659,15 @@ function M.add_review_comment_with_selection()
           vim.notify("❌ Failed to add suggestion: " .. (err or "unknown"), vim.log.levels.ERROR)
         end
       end, start_line)
-    end, suggestion_text, {
+    end,
+    suggestion_text,
+    {
       pr_number = pr_number,
       file_path = file_path,
       line = end_line,
       action = "add_review_suggestion",
-    })
+    }
+  )
 end
 
 function M.add_pending_comment_with_selection()
@@ -3650,8 +3697,12 @@ function M.add_pending_comment_with_selection()
 
   -- Prompt for comment
   input_multiline(
-    "Pending suggested change (edit the code above, line " ..
-    temp_selection.start_line .. "-" .. temp_selection.end_line .. ")", function(body)
+    "Pending suggested change (edit the code above, line "
+      .. temp_selection.start_line
+      .. "-"
+      .. temp_selection.end_line
+      .. ")",
+    function(body)
       if not body then
         return
       end
@@ -3674,12 +3725,15 @@ function M.add_pending_comment_with_selection()
         -- Reload comments to show the new pending comment
         M.load_comments_for_buffer(bufnr, false)
       end)
-    end, suggestion_text, {
+    end,
+    suggestion_text,
+    {
       pr_number = pr_number,
       file_path = file_path,
       line = end_line,
       action = "add_pending_suggestion",
-    })
+    }
+  )
 end
 
 function M.add_review_comment()
@@ -3726,25 +3780,30 @@ function M.add_review_comment()
     })
   else
     -- No existing comments, just prompt for input
-    input_multiline("Review comment for line " .. cursor_line, function(body)
-      if not body then
-        return
-      end
-      vim.notify("Adding review comment...", vim.log.levels.INFO)
-      github.add_review_comment(pr_number, file_path, cursor_line, body, function(ok, err)
-        if ok then
-          vim.notify("✅ Review comment added", vim.log.levels.INFO)
-          M.load_comments_for_buffer(bufnr, true)
-        else
-          vim.notify("❌ Failed to add review comment: " .. (err or "unknown"), vim.log.levels.ERROR)
+    input_multiline(
+      "Review comment for line " .. cursor_line,
+      function(body)
+        if not body then
+          return
         end
-      end)
-    end, nil, {
-      pr_number = pr_number,
-      file_path = file_path,
-      line = cursor_line,
-      action = "add_review_comment",
-    })
+        vim.notify("Adding review comment...", vim.log.levels.INFO)
+        github.add_review_comment(pr_number, file_path, cursor_line, body, function(ok, err)
+          if ok then
+            vim.notify("✅ Review comment added", vim.log.levels.INFO)
+            M.load_comments_for_buffer(bufnr, true)
+          else
+            vim.notify("❌ Failed to add review comment: " .. (err or "unknown"), vim.log.levels.ERROR)
+          end
+        end)
+      end,
+      nil,
+      {
+        pr_number = pr_number,
+        file_path = file_path,
+        line = cursor_line,
+        action = "add_review_comment",
+      }
+    )
   end
 end
 
@@ -3798,32 +3857,37 @@ function M.add_pending_comment()
     })
   else
     -- No existing comments, just prompt for input
-    input_multiline("Pending comment for line " .. cursor_line .. " (will be posted with review)", function(body)
-      if not body then
-        return
-      end
-      -- Get current user
-      github.get_current_user(function(user, err)
-        local username = user or "me"
+    input_multiline(
+      "Pending comment for line " .. cursor_line .. " (will be posted with review)",
+      function(body)
+        if not body then
+          return
+        end
+        -- Get current user
+        github.get_current_user(function(user, err)
+          local username = user or "me"
 
-        -- Add comment to local storage
-        local comment = add_local_pending_comment(pr_number, file_path, cursor_line, body, username)
+          -- Add comment to local storage
+          local comment = add_local_pending_comment(pr_number, file_path, cursor_line, body, username)
 
-        -- Save session to persist pending comments
-        save_session()
+          -- Save session to persist pending comments
+          save_session()
 
-        vim.notify("✅ Pending comment added locally (will be posted with approval/rejection)", vim.log.levels.INFO)
+          vim.notify("✅ Pending comment added locally (will be posted with approval/rejection)", vim.log.levels.INFO)
 
-        -- Reload comments to show the new pending comment
-        M.load_comments_for_buffer(bufnr, false)
-      end)
-    end, nil, {
-      pr_number = pr_number,
-      file_path = file_path,
-      line = cursor_line,
-      action = "add_pending",
-      comment_id = nil,
-    })
+          -- Reload comments to show the new pending comment
+          M.load_comments_for_buffer(bufnr, false)
+        end)
+      end,
+      nil,
+      {
+        pr_number = pr_number,
+        file_path = file_path,
+        line = cursor_line,
+        action = "add_pending",
+        comment_id = nil,
+      }
+    )
   end
 end
 
@@ -3919,10 +3983,12 @@ function M.list_all_comments()
       -- Check if this comment already exists in GitHub comments
       local is_duplicate = false
       for _, posted in ipairs(all_comments) do
-        if posted.path == pending.path and
-            posted.line == pending.line and
-            posted.body == pending.body and
-            not posted.is_local then
+        if
+          posted.path == pending.path
+          and posted.line == pending.line
+          and posted.body == pending.body
+          and not posted.is_local
+        then
           is_duplicate = true
           break
         end
@@ -4044,12 +4110,19 @@ function M.list_global_comments()
       table.insert(lines, 1, string.format("Comment #%d", index or 1))
       table.insert(lines, 2, string.format("Date: %s", comment.created_at))
       table.insert(lines, 3, "")
-      table.insert(lines, 4, "───────────────────────────────")
+      table.insert(
+        lines,
+        4,
+        "───────────────────────────────"
+      )
       table.insert(lines, 5, "")
 
       -- Add footer with actions
       table.insert(lines, "")
-      table.insert(lines, "───────────────────────────────")
+      table.insert(
+        lines,
+        "───────────────────────────────"
+      )
       table.insert(lines, "")
       if comment.type == "comment" then
         table.insert(lines, "Press 'r' to reply | 'R' to add a reaction | 'q' or <Esc> to close")
@@ -4095,7 +4168,7 @@ function M.list_global_comments()
           string.format("# Replying to comment by %s (%s)", comment.user, comment.created_at:sub(1, 10)),
           "",
           "## Original Comment:",
-          ""
+          "",
         }
 
         -- Add the original comment body with quote markers
@@ -4111,42 +4184,47 @@ function M.list_global_comments()
         local initial_text = table.concat(context_lines, "\n")
 
         -- Reply to the comment using multiline input with context
-        input_multiline("Reply to global comment", function(full_text)
-          if not full_text or full_text == "" then
-            return
-          end
-
-          -- Extract only the reply part (everything after "## Your Reply:")
-          local reply_start = full_text:find("## Your Reply:")
-          if not reply_start then
-            -- Fallback: use the entire text if marker not found
-            reply_text = full_text
-          else
-            -- Find the end of the "## Your Reply:" line
-            local reply_line_end = full_text:find("\n", reply_start)
-            if reply_line_end then
-              reply_text = full_text:sub(reply_line_end + 1):match("^%s*(.-)%s*$") -- trim whitespace
-            else
-              reply_text = ""
+        input_multiline(
+          "Reply to global comment",
+          function(full_text)
+            if not full_text or full_text == "" then
+              return
             end
-          end
 
-          if reply_text and reply_text ~= "" then
-            github.add_pr_comment(pr_number, reply_text, function(ok, add_err)
-              if ok then
-                vim.notify("✅ Reply added successfully", vim.log.levels.INFO)
+            -- Extract only the reply part (everything after "## Your Reply:")
+            local reply_start = full_text:find("## Your Reply:")
+            if not reply_start then
+              -- Fallback: use the entire text if marker not found
+              reply_text = full_text
+            else
+              -- Find the end of the "## Your Reply:" line
+              local reply_line_end = full_text:find("\n", reply_start)
+              if reply_line_end then
+                reply_text = full_text:sub(reply_line_end + 1):match("^%s*(.-)%s*$") -- trim whitespace
               else
-                vim.notify("❌ Failed to add reply: " .. (add_err or "unknown"), vim.log.levels.ERROR)
+                reply_text = ""
               end
-            end)
-          end
-        end, initial_text, {
-          pr_number = pr_number,
-          file_path = nil,
-          line = nil,
-          action = "reply_global",
-          comment_id = comment.id,
-        })
+            end
+
+            if reply_text and reply_text ~= "" then
+              github.add_pr_comment(pr_number, reply_text, function(ok, add_err)
+                if ok then
+                  vim.notify("✅ Reply added successfully", vim.log.levels.INFO)
+                else
+                  vim.notify("❌ Failed to add reply: " .. (add_err or "unknown"), vim.log.levels.ERROR)
+                end
+              end)
+            end
+          end,
+          initial_text,
+          {
+            pr_number = pr_number,
+            file_path = nil,
+            line = nil,
+            action = "reply_global",
+            comment_id = comment.id,
+          }
+        )
       end, { buffer = buf })
 
       -- Add reaction keymap only for actual comments (not reviews)
@@ -4294,9 +4372,8 @@ function M.edit_my_comment()
         local has_draft = M._drafts[pr_number] and M._drafts[pr_number][draft_key]
 
         -- Set title based on comment type
-        local title = comment.is_local
-            and " Edit PENDING comment (save: <C-s>, cancel: <Esc>) "
-            or " Edit comment (save: <C-s>, cancel: <Esc>) "
+        local title = comment.is_local and " Edit PENDING comment (save: <C-s>, cancel: <Esc>) "
+          or " Edit comment (save: <C-s>, cancel: <Esc>) "
 
         if has_draft then
           title = " [DRAFT RESTORED] Edit comment (save: <C-s>, cancel: <Esc>) "
@@ -4470,7 +4547,7 @@ function M.edit_my_comment()
         end, { buffer = buf })
 
         -- Enter insert mode automatically
-        vim.cmd("startinsert!")  -- Append at end of line
+        vim.cmd("startinsert!") -- Append at end of line
       end
 
       -- Thread is now shown inline in the edit buffer
@@ -4778,8 +4855,10 @@ function M.show_pr_info()
         end
 
         if pending > 0 then
-          table.insert(lines,
-            string.format("%s **Pending jobs:** %s", check_pending_icon, table.concat(pending_jobs, ", ")))
+          table.insert(
+            lines,
+            string.format("%s **Pending jobs:** %s", check_pending_icon, table.concat(pending_jobs, ", "))
+          )
         end
 
         table.insert(lines, "")
@@ -4830,7 +4909,7 @@ function M.show_pr_info()
         end,
       })
     end) -- End of get_pr_checks callback
-  end)   -- End of get_pr_info callback
+  end) -- End of get_pr_info callback
 end
 
 function M.open_pr()
@@ -4856,29 +4935,26 @@ end
 local function check_and_cleanup_if_needed(callback)
   if vim.g.pr_review_number then
     -- Already in review mode, ask user if they want to cleanup
-    vim.ui.select(
-      { "Yes, cleanup first", "No, continue without cleanup" },
-      {
-        prompt = "You are already reviewing PR #" ..
-            vim.g.pr_review_number .. ". Do you want to cleanup the current review before starting a new one?",
-      },
-      function(choice)
-        if not choice then
-          -- User cancelled
-          return
-        end
-
-        if choice == "Yes, cleanup first" then
-          -- Cleanup and then call the callback
-          M.cleanup_review_branch()
-          -- Wait a bit for cleanup to complete before starting new review
-          vim.defer_fn(callback, 500)
-        else
-          -- Continue without cleanup
-          callback()
-        end
+    vim.ui.select({ "Yes, cleanup first", "No, continue without cleanup" }, {
+      prompt = "You are already reviewing PR #"
+        .. vim.g.pr_review_number
+        .. ". Do you want to cleanup the current review before starting a new one?",
+    }, function(choice)
+      if not choice then
+        -- User cancelled
+        return
       end
-    )
+
+      if choice == "Yes, cleanup first" then
+        -- Cleanup and then call the callback
+        M.cleanup_review_branch()
+        -- Wait a bit for cleanup to complete before starting new review
+        vim.defer_fn(callback, 500)
+      else
+        -- Continue without cleanup
+        callback()
+      end
+    end)
   else
     -- Not in review mode, proceed directly
     callback()
@@ -4887,8 +4963,10 @@ end
 
 function M.list_review_requests()
   if git.has_uncommitted_changes() then
-    vim.notify("Cannot start review: you have uncommitted changes. Please commit or stash them first.",
-      vim.log.levels.ERROR)
+    vim.notify(
+      "Cannot start review: you have uncommitted changes. Please commit or stash them first.",
+      vim.log.levels.ERROR
+    )
     return
   end
 
@@ -4923,8 +5001,10 @@ end
 function M._start_review_for_pr(pr)
   -- Check if already in review mode for a different PR
   if vim.g.pr_review_number and vim.g.pr_review_number ~= pr.number then
-    vim.notify(string.format("Cleaning up current review (PR #%d) to start PR #%d...",
-      vim.g.pr_review_number, pr.number), vim.log.levels.INFO)
+    vim.notify(
+      string.format("Cleaning up current review (PR #%d) to start PR #%d...", vim.g.pr_review_number, pr.number),
+      vim.log.levels.INFO
+    )
     M.cleanup_review_branch()
     -- Wait a bit for cleanup to complete
     vim.defer_fn(function()
@@ -4966,12 +5046,7 @@ end
 function M._do_start_review(pr)
   -- Use head_label for fork PRs (includes owner:branch), replace : with -
   local head_ref = (pr.head_label or pr.head_branch):gsub(":", "-")
-  local review_branch = string.format(
-    "%s%s_to_%s",
-    M.config.branch_prefix,
-    head_ref,
-    pr.base_branch
-  )
+  local review_branch = string.format("%s%s_to_%s", M.config.branch_prefix, head_ref, pr.base_branch)
 
   git.fetch_all(function(fetch_ok, fetch_err)
     if not fetch_ok then
@@ -4985,10 +5060,14 @@ function M._do_start_review(pr)
         return
       end
 
-      debug_log(string.format("Debug: About to merge - branch=%s, owner=%s, url=%s",
-        pr.head_branch or "nil",
-        pr.head_repo_owner or "nil",
-        pr.head_repo_url or "nil"))
+      debug_log(
+        string.format(
+          "Debug: About to merge - branch=%s, owner=%s, url=%s",
+          pr.head_branch or "nil",
+          pr.head_repo_owner or "nil",
+          pr.head_repo_url or "nil"
+        )
+      )
       git.soft_merge(pr.head_branch, pr.head_repo_owner, pr.head_repo_url, function(merge_ok, merge_err, has_conflicts)
         if not merge_ok then
           vim.notify("Error during soft merge: " .. (merge_err or "unknown"), vim.log.levels.ERROR)
@@ -5004,10 +5083,7 @@ function M._do_start_review(pr)
             vim.log.levels.WARN
           )
         else
-          vim.notify(
-            string.format("✅ Ready to review PR #%s: %s", pr.number, pr.title),
-            vim.log.levels.INFO
-          )
+          vim.notify(string.format("✅ Ready to review PR #%s: %s", pr.number, pr.title), vim.log.levels.INFO)
         end
 
         git.get_modified_files_with_lines(function(files, hunks)
@@ -5203,7 +5279,6 @@ function M.setup(opts)
     group = augroup,
     callback = function(args)
       if vim.g.pr_review_number then
-
         M.load_comments_for_buffer(args.buf)
 
         -- Always load changes (for hunks data needed by floats)
@@ -5216,17 +5291,19 @@ function M.setup(opts)
         else
           -- Auto-fix split when buffer is changed manually (not from our navigation)
           -- This fixes the issue when user switches buffers with :b or fzf
-          if not M._opening_file then  -- Don't interfere with our own navigation
+          if not M._opening_file then -- Don't interfere with our own navigation
             local buf_name = vim.api.nvim_buf_get_name(args.buf)
             local buftype = vim.bo[args.buf].buftype
 
             -- Only auto-fix for regular files (not [BEFORE] buffers, not special buffers)
             -- Skip buffers used by menus, pickers, prompts, terminals, etc.
-            if not buf_name:match("^%[BEFORE%]") and
-               buftype ~= "prompt" and
-               buftype ~= "nofile" and
-               buftype ~= "terminal" and
-               buftype ~= "quickfix" then
+            if
+              not buf_name:match("^%[BEFORE%]")
+              and buftype ~= "prompt"
+              and buftype ~= "nofile"
+              and buftype ~= "terminal"
+              and buftype ~= "quickfix"
+            then
               -- Check if we have a split state that doesn't match current buffer
               if M._split_view_state and M._split_view_state.current_buf then
                 -- Only auto-fix if the split state is for a different buffer
@@ -5328,8 +5405,10 @@ end
 
 function M.review_pr()
   if git.has_uncommitted_changes() then
-    vim.notify("Cannot start review: you have uncommitted changes. Please commit or stash them first.",
-      vim.log.levels.ERROR)
+    vim.notify(
+      "Cannot start review: you have uncommitted changes. Please commit or stash them first.",
+      vim.log.levels.ERROR
+    )
     return
   end
 
@@ -5384,12 +5463,7 @@ end
 function M._do_review_pr_with_branch(pr)
   -- Use head_label for fork PRs (includes owner:branch), replace : with -
   local head_ref = (pr.head_label or pr.head_branch):gsub(":", "-")
-  local review_branch = string.format(
-    "%s%s_to_%s",
-    M.config.branch_prefix,
-    head_ref,
-    pr.base_branch
-  )
+  local review_branch = string.format("%s%s_to_%s", M.config.branch_prefix, head_ref, pr.base_branch)
 
   git.fetch_all(function(fetch_ok, fetch_err)
     if not fetch_ok then
@@ -5403,10 +5477,14 @@ function M._do_review_pr_with_branch(pr)
         return
       end
 
-      debug_log(string.format("Debug: About to merge - branch=%s, owner=%s, url=%s",
-        pr.head_branch or "nil",
-        pr.head_repo_owner or "nil",
-        pr.head_repo_url or "nil"))
+      debug_log(
+        string.format(
+          "Debug: About to merge - branch=%s, owner=%s, url=%s",
+          pr.head_branch or "nil",
+          pr.head_repo_owner or "nil",
+          pr.head_repo_url or "nil"
+        )
+      )
       git.soft_merge(pr.head_branch, pr.head_repo_owner, pr.head_repo_url, function(merge_ok, merge_err, has_conflicts)
         if not merge_ok then
           vim.notify("Error during soft merge: " .. (merge_err or "unknown"), vim.log.levels.ERROR)
@@ -5422,10 +5500,7 @@ function M._do_review_pr_with_branch(pr)
             vim.log.levels.WARN
           )
         else
-          vim.notify(
-            string.format("✅ Ready to review PR #%s: %s", pr.number, pr.title),
-            vim.log.levels.INFO
-          )
+          vim.notify(string.format("✅ Ready to review PR #%s: %s", pr.number, pr.title), vim.log.levels.INFO)
         end
 
         git.get_modified_files_with_lines(function(files)
@@ -5694,15 +5769,32 @@ function M.show_review_menu()
       {
         title = "Pull Request",
         items = {
-          { key = "l", desc = "List Pull Requests",               cmd = function() M.review_pr() end },
-          { key = "r", desc = "List Pull Requests with Assignee", cmd = function() M.list_review_requests() end },
-        }
+          {
+            key = "l",
+            desc = "List Pull Requests",
+            cmd = function()
+              M.review_pr()
+            end,
+          },
+          {
+            key = "r",
+            desc = "List Pull Requests with Assignee",
+            cmd = function()
+              M.list_review_requests()
+            end,
+          },
+        },
       },
     }
 
     if has_session then
-      table.insert(sections[1].items,
-        { key = "s", desc = "Load Last Session", cmd = function() M.load_last_session() end })
+      table.insert(sections[1].items, {
+        key = "s",
+        desc = "Load Last Session",
+        cmd = function()
+          M.load_last_session()
+        end,
+      })
     end
   else
     -- In review mode - show review actions
@@ -5710,39 +5802,141 @@ function M.show_review_menu()
       {
         title = "Pull Request",
         items = {
-          { key = "i", desc = "PR Info",            cmd = function() M.show_pr_info() end },
-          { key = "o", desc = "Open PR in Browser", cmd = function() M.open_pr() end },
-          { key = "c", desc = "Comment on PR",      cmd = function() M.add_comment() end },
-          { key = "a", desc = "Approve PR",         cmd = function() M.approve_pr() end },
-          { key = "x", desc = "Request Changes",    cmd = function() M.request_changes() end },
-          { key = "M", desc = "Merge PR",           cmd = function() M.merge_pr() end },
-          { key = "e", desc = "Exit Review",        cmd = function() M.cleanup_review_branch() end },
-        }
+          {
+            key = "i",
+            desc = "PR Info",
+            cmd = function()
+              M.show_pr_info()
+            end,
+          },
+          {
+            key = "o",
+            desc = "Open PR in Browser",
+            cmd = function()
+              M.open_pr()
+            end,
+          },
+          {
+            key = "c",
+            desc = "Comment on PR",
+            cmd = function()
+              M.add_comment()
+            end,
+          },
+          {
+            key = "a",
+            desc = "Approve PR",
+            cmd = function()
+              M.approve_pr()
+            end,
+          },
+          {
+            key = "x",
+            desc = "Request Changes",
+            cmd = function()
+              M.request_changes()
+            end,
+          },
+          {
+            key = "M",
+            desc = "Merge PR",
+            cmd = function()
+              M.merge_pr()
+            end,
+          },
+          {
+            key = "e",
+            desc = "Exit Review",
+            cmd = function()
+              M.cleanup_review_branch()
+            end,
+          },
+        },
       },
       {
         title = "General",
         items = {
-          { key = "b", desc = "Toggle Review Buffer", cmd = function() M.toggle_review_buffer() end },
-        }
+          {
+            key = "b",
+            desc = "Toggle Review Buffer",
+            cmd = function()
+              M.toggle_review_buffer()
+            end,
+          },
+        },
       },
       {
         title = "Line Comment",
         items = {
-          { key = "l", desc = "Add Line Comment",    cmd = function() M.add_review_comment() end },
-          { key = "p", desc = "Add Pending Comment", cmd = function() M.add_pending_comment() end },
-          { key = "r", desc = "Reply to Comment",    cmd = function() M.reply_to_comment() end },
-          { key = "m", desc = "Edit My Comment",     cmd = function() M.edit_my_comment() end },
-          { key = "d", desc = "Delete Comment",      cmd = function() M.delete_my_comment() end },
-          { key = "R", desc = "Toggle Reaction",     cmd = function() M.add_reaction_to_comment() end },
-        }
+          {
+            key = "l",
+            desc = "Add Line Comment",
+            cmd = function()
+              M.add_review_comment()
+            end,
+          },
+          {
+            key = "p",
+            desc = "Add Pending Comment",
+            cmd = function()
+              M.add_pending_comment()
+            end,
+          },
+          {
+            key = "r",
+            desc = "Reply to Comment",
+            cmd = function()
+              M.reply_to_comment()
+            end,
+          },
+          {
+            key = "m",
+            desc = "Edit My Comment",
+            cmd = function()
+              M.edit_my_comment()
+            end,
+          },
+          {
+            key = "d",
+            desc = "Delete Comment",
+            cmd = function()
+              M.delete_my_comment()
+            end,
+          },
+          {
+            key = "R",
+            desc = "Toggle Reaction",
+            cmd = function()
+              M.add_reaction_to_comment()
+            end,
+          },
+        },
       },
       {
         title = "Comments",
         items = {
-          { key = "s", desc = "Submit Pending Comments", cmd = function() M.submit_pending_comments() end },
-          { key = "v", desc = "List All Comments",       cmd = function() M.list_all_comments() end },
-          { key = "g", desc = "Global PR Comments",      cmd = function() M.list_global_comments() end },
-        }
+          {
+            key = "s",
+            desc = "Submit Pending Comments",
+            cmd = function()
+              M.submit_pending_comments()
+            end,
+          },
+          {
+            key = "v",
+            desc = "List All Comments",
+            cmd = function()
+              M.list_all_comments()
+            end,
+          },
+          {
+            key = "g",
+            desc = "Global PR Comments",
+            cmd = function()
+              M.list_global_comments()
+            end,
+          },
+        },
       },
     }
   end

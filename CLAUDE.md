@@ -558,7 +558,7 @@ Defined in setup:
 
 ## Contact and Support
 
-- GitHub Issues: <https://github.com/username/neovim-pr-reviewer/issues>
+- GitHub Issues: <https://github.com/mosheavni/neovim-pr-reviewer/issues>
 - Documentation: `:h github-pr-reviewer`
 
 ---
