@@ -11,7 +11,7 @@ local function debug_log(msg)
 end
 
 function M.list_open_prs()
-  local result = vim.fn.system("gh pr list --state open --json number,title,headRefName,baseRefName,author,headRepository,headRepositoryOwner,isCrossRepository,labels,headRefOid")
+  local result = vim.fn.system("gh pr list --state open --json id,number,title,headRefName,baseRefName,author,headRepository,headRepositoryOwner,isCrossRepository,labels,headRefOid")
 
   if vim.v.shell_error ~= 0 then
     return nil, "Failed to fetch PRs. Make sure 'gh' CLI is installed and authenticated."
@@ -52,6 +52,7 @@ function M.list_open_prs()
 
     table.insert(formatted, {
       number = pr.number,
+      node_id = pr.id,
       title = pr.title,
       head_branch = head_branch,
       head_label = head_label,
@@ -1451,6 +1452,102 @@ function M.remove_issue_comment_reaction(comment_id, reaction_id, callback)
       end)
     end,
   })
+end
+
+-- Mark a file as viewed in a PR using GraphQL API
+function M.mark_file_as_viewed(pr_node_id, file_path, callback)
+  local query = string.format([[
+mutation {
+  markFileAsViewed(input: {pullRequestId: "%s", path: "%s"}) {
+    clientMutationId
+  }
+}
+]], pr_node_id, file_path)
+
+  local json_body = vim.fn.json_encode({ query = query })
+  local cmd = "gh api graphql --input -"
+
+  local job_id = vim.fn.jobstart(cmd, {
+    stdin = "pipe",
+    stdout_buffered = true,
+    on_stdout = function(_, data)
+      vim.schedule(function()
+        if data and data[1] and data[1] ~= "" then
+          local json_str = table.concat(data, "")
+          local ok, result = pcall(vim.fn.json_decode, json_str)
+          if ok and result and not result.errors then
+            callback(true, nil)
+          else
+            local err_msg = "Failed to mark file as viewed"
+            if result and result.errors and result.errors[1] then
+              err_msg = result.errors[1].message
+            end
+            callback(false, err_msg)
+          end
+        else
+          callback(true, nil)
+        end
+      end)
+    end,
+    on_stderr = function(_, data)
+      if data and data[1] and data[1] ~= "" then
+        vim.schedule(function()
+          callback(false, table.concat(data, "\n"))
+        end)
+      end
+    end,
+  })
+
+  vim.fn.chansend(job_id, json_body)
+  vim.fn.chanclose(job_id, "stdin")
+end
+
+-- Unmark a file as viewed in a PR using GraphQL API
+function M.unmark_file_as_viewed(pr_node_id, file_path, callback)
+  local query = string.format([[
+mutation {
+  unmarkFileAsViewed(input: {pullRequestId: "%s", path: "%s"}) {
+    clientMutationId
+  }
+}
+]], pr_node_id, file_path)
+
+  local json_body = vim.fn.json_encode({ query = query })
+  local cmd = "gh api graphql --input -"
+
+  local job_id = vim.fn.jobstart(cmd, {
+    stdin = "pipe",
+    stdout_buffered = true,
+    on_stdout = function(_, data)
+      vim.schedule(function()
+        if data and data[1] and data[1] ~= "" then
+          local json_str = table.concat(data, "")
+          local ok, result = pcall(vim.fn.json_decode, json_str)
+          if ok and result and not result.errors then
+            callback(true, nil)
+          else
+            local err_msg = "Failed to unmark file as viewed"
+            if result and result.errors and result.errors[1] then
+              err_msg = result.errors[1].message
+            end
+            callback(false, err_msg)
+          end
+        else
+          callback(true, nil)
+        end
+      end)
+    end,
+    on_stderr = function(_, data)
+      if data and data[1] and data[1] ~= "" then
+        vim.schedule(function()
+          callback(false, table.concat(data, "\n"))
+        end)
+      end
+    end,
+  })
+
+  vim.fn.chansend(job_id, json_body)
+  vim.fn.chanclose(job_id, "stdin")
 end
 
 return M

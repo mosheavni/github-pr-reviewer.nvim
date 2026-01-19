@@ -101,6 +101,7 @@ local function save_session()
 
   local session_data = {
     pr_number = vim.g.pr_review_number,
+    node_id = vim.g.pr_review_node_id,
     base_branch = vim.g.pr_review_base_branch,
     previous_branch = vim.g.pr_review_previous_branch,
     modified_files = vim.g.pr_review_modified_files,
@@ -1615,31 +1616,43 @@ function M.mark_file_as_viewed_and_next()
     return
   end
 
+  local node_id = vim.g.pr_review_node_id
+  if not node_id then
+    vim.notify("PR node ID not available. Cannot sync viewed status with GitHub.", vim.log.levels.WARN)
+    return
+  end
+
   local bufnr = vim.api.nvim_get_current_buf()
   local file_path = get_relative_path(bufnr)
+  local is_currently_viewed = M._viewed_files[file_path]
 
-  -- Toggle viewed status
-  if M._viewed_files[file_path] then
-    -- If already viewed, unmark it
-    M._viewed_files[file_path] = false
-  else
-    -- If not viewed, mark as viewed and go to next file
-    M._viewed_files[file_path] = true
-  end
+  -- Call the appropriate GitHub API based on current state
+  local api_func = is_currently_viewed and github.unmark_file_as_viewed or github.mark_file_as_viewed
+  local action = is_currently_viewed and "unmark" or "mark"
 
-  -- Save session
-  save_session()
+  api_func(node_id, file_path, function(success, err)
+    if not success then
+      vim.notify(string.format("Failed to %s file as viewed: %s", action, err or "unknown error"), vim.log.levels.ERROR)
+      return
+    end
 
-  -- Update the float to show new status
-  update_changes_float()
+    -- Update local state only after successful API call
+    M._viewed_files[file_path] = not is_currently_viewed
 
-  -- Update review buffer
-  M.refresh_review_buffer()
+    -- Save session
+    save_session()
 
-  -- Only go to next file if we just marked it as viewed (not when unmarking)
-  if M._viewed_files[file_path] then
-    M.next_file()
-  end
+    -- Update the float to show new status
+    update_changes_float()
+
+    -- Update review buffer
+    M.refresh_review_buffer()
+
+    -- Only go to next file if we just marked it as viewed (not when unmarking)
+    if M._viewed_files[file_path] then
+      M.next_file()
+    end
+  end)
 end
 
 function M.next_hunk()
@@ -4672,6 +4685,7 @@ function M.load_last_session()
 
   -- Restore global state
   vim.g.pr_review_number = session_data.pr_number
+  vim.g.pr_review_node_id = session_data.node_id
   vim.g.pr_review_base_branch = session_data.base_branch
   vim.g.pr_review_previous_branch = session_data.previous_branch
   vim.g.pr_review_modified_files = session_data.modified_files
@@ -5075,6 +5089,7 @@ function M._do_start_review(pr)
         end
 
         vim.g.pr_review_number = pr.number
+        vim.g.pr_review_node_id = pr.node_id
         vim.g.pr_review_base_branch = pr.base_branch
 
         if has_conflicts then
@@ -5492,6 +5507,7 @@ function M._do_review_pr_with_branch(pr)
         end
 
         vim.g.pr_review_number = pr.number
+        vim.g.pr_review_node_id = pr.node_id
         vim.g.pr_review_base_branch = pr.base_branch
 
         if has_conflicts then
@@ -5542,6 +5558,7 @@ function M.cleanup_review_branch()
     if ok then
       delete_session()
       vim.g.pr_review_number = nil
+      vim.g.pr_review_node_id = nil
       vim.g.pr_review_base_branch = nil
       github.clear_cache()
       M._buffer_comments = {}
