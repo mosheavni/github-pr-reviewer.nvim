@@ -45,7 +45,7 @@ jobs:
         uses: baptiste0928/cargo-install@v3
         with:
           crate: selene
-          version: "0.27.1"
+          version: "0.29.0"
 
       - name: Run Selene
         run: selene lua/
