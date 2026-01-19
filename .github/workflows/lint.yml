@@ -41,19 +41,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cache Selene
-        uses: actions/cache@v4
-        id: cache-selene
-        with:
-          path: ~/.cargo/bin/selene
-          key: ${{ runner.os }}-selene-0.27.1
-
       - name: Install Selene
-        if: steps.cache-selene.outputs.cache-hit != 'true'
         uses: baptiste0928/cargo-install@v3
         with:
           crate: selene
           version: "0.27.1"
 
       - name: Run Selene
-        run: ~/.cargo/bin/selene lua/
+        run: selene lua/
