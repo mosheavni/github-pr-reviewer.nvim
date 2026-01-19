@@ -1,8 +1,8 @@
--- Luacheck configuration for Neovim plugins
 std = "luajit"
+-- Luacheck configuration for Neovim plugins
 
--- Neovim globals
-read_globals = {
+-- Neovim globals (use globals instead of read_globals to allow writing to vim.bo, vim.wo, vim.g, vim.b)
+globals = {
   "vim",
 }
 
