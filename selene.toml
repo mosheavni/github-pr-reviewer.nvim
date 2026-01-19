@@ -1,6 +1,5 @@
-[config]
-std = "lua51+vim"
+std = "neovim"
 
 [rules]
-# Allow unused variables starting with underscore
-unused_variable = { allow_unused_underscore = true }
+# Allow _G usage for exposing functions to keymaps (common Neovim pattern)
+global_usage = "allow"

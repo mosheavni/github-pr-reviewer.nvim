@@ -1,9 +1,0 @@
----
-# Selene standard library definition for Neovim's vim global
-# See: https://kampfkarren.github.io/selene/usage/std.html
-
-base: lua51
-
-globals:
-  vim:
-    any: true
