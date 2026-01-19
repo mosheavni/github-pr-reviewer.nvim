@@ -1,3 +1,5 @@
+<!-- markdownlint-disable MD013 -->
+
 # Claude Code - Guide for AIs and Developers
 
 This document contains essential information about the architecture, patterns, and important details of the `neovim-pr-reviewer` plugin.
@@ -215,7 +217,7 @@ end
 
 ### 1. Review Initialization
 
-```
+```text
 User: :PR <number>
   ↓
 fetch_pr_changes() (github.lua)
@@ -229,7 +231,7 @@ M.start_review()
 
 ### 2. File Opening
 
-```
+```text
 User: <CR> in review buffer OR C-l/C-h
   ↓
 open_file_safe(file)
@@ -247,7 +249,7 @@ update_changes_float()  # Show popups
 
 ### 3. Toggle to Split Mode
 
-```
+```text
 User: <C-v> (or toggle_diff_view)
   ↓
 M.toggle_diff_view()
@@ -266,7 +268,7 @@ create_split_view(bufnr, file_path)
 
 ### 4. Restore to Unified
 
-```
+```text
 User: <C-v> again
   ↓
 restore_unified_view()
